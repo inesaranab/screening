@@ -78,11 +78,24 @@ _WINDOW_OVERLAP = 50
 
 @cache
 def _injection_classifier():
-    # Loaded once (model init is the expensive part), reused per call.
+    """Build the injection classification pipeline once and cache it.
+
+    Returns:
+        A transformers text-classification pipeline. Model init is the expensive
+        part, so it is loaded once and reused across calls.
+    """
     return pipeline("text-classification", model=_INJECTION_MODEL)
 
 
 def _windows(text: str) -> list[str]:
+    """Split text into overlapping character windows for classification.
+
+    Args:
+        text: The text to scan.
+
+    Returns:
+        A list of overlapping substrings, or ``[text]`` if it fits one window.
+    """
     if len(text) <= _WINDOW_CHARS:
         return [text]
     step = _WINDOW_CHARS - _WINDOW_OVERLAP
@@ -90,9 +103,10 @@ def _windows(text: str) -> list[str]:
 
 
 class ClassifierGuardrail:
-    """Satisfies the Guardrail port."""
+    """Guardrail adapter: Presidio for PII, a trained classifier for injection."""
 
     def __init__(self) -> None:
+        """Build the Presidio engines and load the injection classifier."""
         nlp_engine = NlpEngineProvider(
             nlp_configuration={
                 "nlp_engine_name": "spacy",
@@ -109,8 +123,15 @@ class ClassifierGuardrail:
         self._classifier = _injection_classifier()
 
     def _injection_score(self, text: str) -> float:
-        # Scan every window; take the highest INJECTION probability seen. A
-        # label + score, not a text match, so reworded attacks are still caught.
+        """Return the highest injection probability across all windows.
+
+        Args:
+            text: The transcript to scan.
+
+        Returns:
+            The maximum INJECTION probability seen (0.0–1.0). A label + score,
+            not a text match, so reworded attacks are still caught.
+        """
         best = 0.0
         for scores in self._classifier(_windows(text), top_k=None, truncation=True):
             for s in scores:
@@ -119,9 +140,27 @@ class ClassifierGuardrail:
         return best
 
     async def scrub(self, text: str) -> ScrubResult:
+        """Scrub off the event loop.
+
+        Args:
+            text: The raw candidate transcript.
+
+        Returns:
+            The ScrubResult from the synchronous ``_scrub``, run in a thread so
+            the CPU-bound work doesn't block the server.
+        """
         return await run_in_threadpool(self._scrub, text)
 
     def _scrub(self, text: str) -> ScrubResult:
+        """Detect injection, then redact PII (the synchronous core of scrub).
+
+        Args:
+            text: The raw candidate transcript.
+
+        Returns:
+            A ScrubResult. On injection it fails closed — the content is withheld
+            and PII work is skipped; otherwise PII entities are masked in place.
+        """
         # 1. Injection first. If flagged, fail closed immediately: withhold the
         #    content and skip PII work entirely — nothing downstream sees it.
         if self._injection_score(text) >= _INJECTION_THRESHOLD:

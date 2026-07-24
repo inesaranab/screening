@@ -1,41 +1,53 @@
-"""The contract for /screen"""
+"""The contract for /screen — the Pydantic types every layer depends on."""
 
 from enum import Enum
 
 from pydantic import BaseModel, Field
 
 
-# input
 class ScreenRequest(BaseModel):
+    """The request body: one transcript screened against one job description."""
+
     transcript: str = Field(min_length=1, description="Candidate interview transcript.")
     job_description: str = Field(
         min_length=1, description="The role being screened for."
     )
 
 
-# base model for human in the loop
 class NextStep(str, Enum):
+    """Suggested next action.
+
+    An enum, not a free string, so the model can't invent an unhandled value —
+    an out-of-spec step fails validation.
+    """
+
     ADVANCE = "advance"
     REJECT = "reject"
     REQUEST_MORE_INFO = "more_info"
 
 
-# guardrails output
 class ScrubResult(BaseModel):
-    clean_text: str  # what the llm recieves
+    """What the guardrail returns: the cleaned text plus what it found."""
+
+    clean_text: str  # the cleaned text the LLM receives — never the raw input
     pii_redacted: bool = False  # signals if PII attributes were removed -> Flags
     injection_detected: bool = (
         False  # signals if instruction-like content was found and neutralized -> Flags
     )
 
 
-# the model's structured output (validated by the LLM adapter)
 class Assessment(BaseModel):
+    """The model's structured output, validated by the LLM adapter.
+
+    Every field is a guarantee: Instructor coerces the raw completion into this
+    shape and reasks on failure.
+    """
+
     fit_score: int | None = Field(
         default=None,
         ge=1,
         le=5,
-        description="1 (poor fit) to 5 (strong fit). Out of range = invalid.",
+        description="1 (poor fit) to 5 (strong fit); None when the input was withheld (e.g. injection).",
     )
     rationale: str = Field(
         min_length=1,
@@ -50,17 +62,21 @@ class Assessment(BaseModel):
     )
 
 
-# flags the system adds to inform reviewers
 class Flags(BaseModel):
+    """Signals the *system* raises for the reviewer — separate from the model's claims."""
+
     injection_detected: bool = False  # transcript contained instruction-like content
-    pii_redacted: bool = False  # protected attributes
+    pii_redacted: bool = False  # PII / protected attributes were removed pre-model
     low_confidence: bool = False  # score should be treated with caution
-    out_of_scope: bool = False  # transcript/JD didn't support a real assessment TODO: the LLM should not assess the transcript as it could be compromised, solutions: embedd the transcript with a cosine model, measure similarity on the score.
+    out_of_scope: bool = (
+        False  # input was withheld (injection) or didn't support a real assessment
+    )
 
 
-# result
 class ScreenResult(BaseModel):
+    """The response envelope: decision-support for a human, never an autonomous verdict."""
+
     assessment: Assessment
     flags: Flags = Field(default_factory=Flags)
-    # This parameter is set to true to support a future Human in the loop
+    # Standing reminder that this output supports a human decision, never replaces it.
     decision_support_only: bool = True

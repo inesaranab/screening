@@ -1,8 +1,10 @@
-"""The service layer.
+"""The service layer — the vendor-free core that owns the order of operations.
 
-The ordering of operations is as follows:
+    scrub  →  [gate: fail closed on injection]  →  assess (model)  →  assemble
 
-    scrub (remove PII + injection)  →  assess (model)  →  assemble result
+Scrubbing runs before anything else, so the model never sees raw candidate data.
+If the guardrail flags injection we fail closed: the model is never called and a
+withheld result is returned, so a tampered transcript can't produce a real score.
 """
 
 from app.domain.models import (
@@ -17,11 +19,29 @@ from app.ports.llm import LLMClient
 
 
 class ScreenService:
+    """Orchestrates one screening request across the guardrail and LLM ports."""
+
     def __init__(self, guardrail: Guardrail, llm: LLMClient) -> None:
+        """Store the collaborators, typed as ports (never concrete adapters).
+
+        Args:
+            guardrail: Something that can scrub a transcript.
+            llm: Something that can assess a scrubbed transcript.
+        """
         self._guardrail = guardrail
         self._llm = llm
 
     async def screen(self, request: ScreenRequest) -> ScreenResult:
+        """Screen a candidate transcript against a job description.
+
+        Args:
+            request: The transcript and job description to assess.
+
+        Returns:
+            A ScreenResult: either the model's assessment with reviewer flags,
+            or — if injection was detected — a withheld result (no score, routed
+            for human review) with ``out_of_scope`` set.
+        """
         # 1. Scrub the raw transcript.
         scrub = await self._guardrail.scrub(request.transcript)
 
