@@ -1,0 +1,24 @@
+# Pre-commit hooks. Setup:
+#   uv tool install pre-commit     # or: pipx install pre-commit / brew install pre-commit
+#   pre-commit install             # wire it into git (runs on every commit)
+#   pre-commit run --all-files     # run now, against the whole repo
+#
+# Keep hook versions current with:  pre-commit autoupdate
+repos:
+  # Ruff — lint (with autofix) + format. Official Astral hook.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ty — Astral's type checker. Run via uvx so it needs no project dependency.
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty (type check)
+        entry: uvx ty check
+        language: system
+        types: [python]
+        pass_filenames: false

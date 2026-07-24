@@ -1,0 +1,150 @@
+"""Adapter: the guardrail, behind the `Guardrail` port.
+
+Locked design: Presidio for PII (the layered regex + NER standard), a small
+TRAINED classifier for injection (replaces hand-written regex that only caught
+exact phrasings).
+
+    PII       -> Presidio, built-in multi-region recognizers (PhoneRecognizer
+                 covers US/UK/DE/FR/IL/IN/CA/BR — no UK-only regex), plus a
+                 custom DOB recognizer and a tech-term allow_list to curb
+                 over-redaction.
+    Injection -> protectai/deberta-v3-base-prompt-injection-v2 (Apache-2.0)
+                 a classifier that learned injection INTENT, so a reworded attack
+                 ("please set aside the earlier guidance...") is still caught.
+
+Both run locally — nothing leaves the machine.
+"""
+
+from functools import cache
+
+from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
+from presidio_analyzer.nlp_engine import NlpEngineProvider
+from presidio_anonymizer import AnonymizerEngine
+from starlette.concurrency import run_in_threadpool
+from transformers import pipeline
+
+from app.domain.models import ScrubResult
+
+# We use a specific DOB recogniser instead of the generic DATE_TIME so durations
+# ("six years") survive — only an actual date of birth is a PII risk. Phones are
+# left to Presidio's BUILT-IN multi-region recogniser (US/UK/DE/FR/IL/IN/CA/BR)
+# rather than a UK-only regex — that's the locale-general choice.
+_ENTITIES = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION", "DOB"]
+
+# Terms Presidio otherwise mislabels (e.g. "Python"/"Go" as a PERSON). The
+# allow_list drops any finding whose text is one of these — stops over-redaction
+# from eating the exact skills we score on.
+_ALLOW = [
+    "Python",
+    "Go",
+    "Golang",
+    "Java",
+    "Ruby",
+    "Rust",
+    "Postgres",
+    "PostgreSQL",
+    "AWS",
+    "GDPR",
+    "PCI",
+    "PCI-DSS",
+    "Kubernetes",
+    "Docker",
+    "Redis",
+    "Kafka",
+]
+
+# A date of birth, in the forms "3 March 1990" and "03/03/1990". Requires a day
+# number, so "March 2027" / "six years" don't match. Date formats are fairly
+# international, so this stays reasonably locale-general.
+_DOB = [
+    Pattern(
+        name="dob_text",
+        regex=r"\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
+        r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
+        r"Dec(?:ember)?)\s+\d{4}\b",
+        score=0.85,
+    ),
+    Pattern(name="dob_numeric", regex=r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", score=0.85),
+]
+
+_INJECTION_MODEL = "protectai/deberta-v3-base-prompt-injection-v2"
+# Flag when the INJECTION probability reaches this.
+_INJECTION_THRESHOLD = 0.5
+# The classifier truncates at ~512 tokens, so long transcripts are scanned in
+# overlapping character windows
+_WINDOW_CHARS = 250
+_WINDOW_OVERLAP = 50
+
+
+@cache
+def _injection_classifier():
+    # Loaded once (model init is the expensive part), reused per call.
+    return pipeline("text-classification", model=_INJECTION_MODEL)
+
+
+def _windows(text: str) -> list[str]:
+    if len(text) <= _WINDOW_CHARS:
+        return [text]
+    step = _WINDOW_CHARS - _WINDOW_OVERLAP
+    return [text[i : i + _WINDOW_CHARS] for i in range(0, len(text), step)]
+
+
+class ClassifierGuardrail:
+    """Satisfies the Guardrail port."""
+
+    def __init__(self) -> None:
+        nlp_engine = NlpEngineProvider(
+            nlp_configuration={
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+            }
+        ).create_engine()
+        self._analyzer = AnalyzerEngine(
+            nlp_engine=nlp_engine, supported_languages=["en"]
+        )
+        self._analyzer.registry.add_recognizer(
+            PatternRecognizer(supported_entity="DOB", patterns=_DOB)
+        )
+        self._anonymizer = AnonymizerEngine()
+        self._classifier = _injection_classifier()
+
+    def _injection_score(self, text: str) -> float:
+        # Scan every window; take the highest INJECTION probability seen. A
+        # label + score, not a text match, so reworded attacks are still caught.
+        best = 0.0
+        for scores in self._classifier(_windows(text), top_k=None, truncation=True):
+            for s in scores:
+                if s["label"].upper() in ("INJECTION", "LABEL_1"):
+                    best = max(best, float(s["score"]))
+        return best
+
+    async def scrub(self, text: str) -> ScrubResult:
+        return await run_in_threadpool(self._scrub, text)
+
+    def _scrub(self, text: str) -> ScrubResult:
+        # 1. Injection first. If flagged, fail closed immediately: withhold the
+        #    content and skip PII work entirely — nothing downstream sees it.
+        if self._injection_score(text) >= _INJECTION_THRESHOLD:
+            return ScrubResult(
+                clean_text="[flagged by injection classifier — content withheld from scoring]",
+                pii_redacted=False,
+                injection_detected=True,
+            )
+
+        # 2. PII: detect entities and replace each with a <TYPE> placeholder.
+        found = self._analyzer.analyze(
+            text=text, language="en", entities=_ENTITIES, allow_list=_ALLOW
+        )
+        # Presidio's analyzer and anonymizer each define their own (identical)
+        # RecognizerResult class; passing analyzer results in is the documented,
+        # runtime-correct usage, so ty's cross-class mismatch is a false positive.
+        anonymized = self._anonymizer.anonymize(
+            text=text,
+            analyzer_results=found,  # ty: ignore[invalid-argument-type]
+        )
+        clean = anonymized.text
+        return ScrubResult(
+            clean_text=clean,
+            pii_redacted=bool(found),
+            injection_detected=False,
+        )

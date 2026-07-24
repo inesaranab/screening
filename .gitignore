@@ -1,0 +1,16 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets — never commit the real env file (the .example is the template)
+.env
+
+# Editor / assistant local dirs
+.claude/
