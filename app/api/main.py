@@ -1,3 +1,10 @@
+"""HTTP adapter + composition root.
+
+The one place that knows both FastAPI and the concrete adapters: it builds the
+guardrail + LLM client once at startup and injects them into ScreenService.
+Everything below this layer (domain, ports) stays vendor-free.
+"""
+
 import logging
 import secrets
 import time
@@ -19,9 +26,12 @@ logger = logging.getLogger("screen")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # awaits startup/shutdown
-    # Build the adapters at startup
-    # Perform cleanup
+    """Wire adapters into the service at startup; close the LLM client at exit.
+
+    Args:
+        app: The FastAPI app; the built service is stored on ``app.state``.
+    """
+    # Build the expensive adapters once at startup, tear the LLM client down at exit.
     setup_logging()
     guardrail = ClassifierGuardrail()
     llm = OpenAICompatibleLLM()
@@ -30,11 +40,20 @@ async def lifespan(app: FastAPI):
     await llm.aclose()
 
 
-app = FastAPI(title="Video /screen", lifespan=lifespan)
+app = FastAPI(title="Screening /screen", lifespan=lifespan)
 
 
 # authentication
 def require_api_key(x_api_key: str = Header(default="")) -> None:
+    """Reject the request unless a valid API key is present.
+
+    Args:
+        x_api_key: The ``x-api-key`` request header.
+
+    Raises:
+        HTTPException: 401 if the key is missing or wrong. Compared in constant
+            time so the check can't be timing-attacked.
+    """
     if not secrets.compare_digest(x_api_key, settings.service_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -44,6 +63,14 @@ def require_api_key(x_api_key: str = Header(default="")) -> None:
 
 
 def get_service(request: Request) -> ScreenService:
+    """Return the singleton ScreenService built at startup (DI provider).
+
+    Args:
+        request: The incoming request, used to reach ``app.state``.
+
+    Returns:
+        The shared ScreenService instance.
+    """
     return request.app.state.service
 
 
@@ -53,6 +80,21 @@ async def screen(
     service: ScreenService = Depends(get_service),
     auth: None = Depends(require_api_key),
 ) -> ScreenResult:
+    """Screen a candidate and return decision-support for a human reviewer.
+
+    Args:
+        request: The transcript and job description to assess.
+        service: The screening service (injected).
+        auth: Auth guard dependency; raises before the body runs if the key is bad.
+
+    Returns:
+        The ScreenResult on success.
+
+    Raises:
+        HTTPException: 504 on model timeout, 503 if the model is unreachable,
+            502 on malformed model output or any other failure (fails closed,
+            never leaking internals or candidate data).
+    """
     started = time.perf_counter()
     try:
         result = await service.screen(request)
@@ -102,4 +144,9 @@ async def screen(
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "I am great!, everything seems to be running"}
+    """Liveness probe.
+
+    Returns:
+        ``{"status": "ok"}`` when the process is serving.
+    """
+    return {"status": "ok"}
