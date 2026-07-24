@@ -9,6 +9,7 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from instructor.core.exceptions import InstructorRetryException
@@ -26,11 +27,6 @@ logger = logging.getLogger("screen")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Wire adapters into the service at startup; close the LLM client at exit.
-
-    Args:
-        app: The FastAPI app; the built service is stored on ``app.state``.
-    """
     # Build the expensive adapters once at startup, tear the LLM client down at exit.
     setup_logging()
     guardrail = ClassifierGuardrail()
@@ -44,16 +40,7 @@ app = FastAPI(title="Screening /screen", lifespan=lifespan)
 
 
 # authentication
-def require_api_key(x_api_key: str = Header(default="")) -> None:
-    """Reject the request unless a valid API key is present.
-
-    Args:
-        x_api_key: The ``x-api-key`` request header.
-
-    Raises:
-        HTTPException: 401 if the key is missing or wrong. Compared in constant
-            time so the check can't be timing-attacked.
-    """
+def require_api_key(x_api_key: Annotated[str, Header()] = "") -> None:
     if not secrets.compare_digest(x_api_key, settings.service_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -63,38 +50,15 @@ def require_api_key(x_api_key: str = Header(default="")) -> None:
 
 
 def get_service(request: Request) -> ScreenService:
-    """Return the singleton ScreenService built at startup (DI provider).
-
-    Args:
-        request: The incoming request, used to reach ``app.state``.
-
-    Returns:
-        The shared ScreenService instance.
-    """
     return request.app.state.service
 
 
 @app.post("/screen", response_model=ScreenResult)
 async def screen(
     request: ScreenRequest,
-    service: ScreenService = Depends(get_service),
-    auth: None = Depends(require_api_key),
+    service: Annotated[ScreenService, Depends(get_service)],
+    auth: Annotated[None, Depends(require_api_key)],
 ) -> ScreenResult:
-    """Screen a candidate and return decision-support for a human reviewer.
-
-    Args:
-        request: The transcript and job description to assess.
-        service: The screening service (injected).
-        auth: Auth guard dependency; raises before the body runs if the key is bad.
-
-    Returns:
-        The ScreenResult on success.
-
-    Raises:
-        HTTPException: 504 on model timeout, 503 if the model is unreachable,
-            502 on malformed model output or any other failure (fails closed,
-            never leaking internals or candidate data).
-    """
     started = time.perf_counter()
     try:
         result = await service.screen(request)
@@ -113,8 +77,7 @@ async def screen(
         return result
     except (APITimeoutError, APIConnectionError, InstructorRetryException) as exc:
         # Instructor WRAPS the underlying openai error in InstructorRetryException,
-        # so we unwrap via __cause__ to map the real failure precisely. (Caught by
-        # our eval suite: without this, every timeout became a generic 502.)
+        # so we unwrap via __cause__ to map the real failure precisely.
         cause = exc.__cause__ if isinstance(exc, InstructorRetryException) else exc
         if isinstance(cause, APITimeoutError):
             code, detail = (
@@ -144,9 +107,4 @@ async def screen(
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    """Liveness probe.
-
-    Returns:
-        ``{"status": "ok"}`` when the process is serving.
-    """
     return {"status": "ok"}

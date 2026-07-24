@@ -12,5 +12,7 @@ wheels/
 # Secrets — never commit the real env file (the .example is the template)
 .env
 
-# Editor / assistant local dirs
-.claude/
+# Editor / assistant local dirs — but keep the authored agent skills (they show
+# how the AI was guided; see .claude/skills/README.md)
+.claude/*
+!.claude/skills/

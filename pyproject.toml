@@ -35,18 +35,3 @@ markers = ["live: hits real models / network (slow)"]
 
 [tool.fastapi]
 entrypoint = "app.api.main:app"
-
-[tool.ruff.lint.flake8-bugbear]
-# Depends()/Query()/Header() etc. in argument defaults is the idiomatic FastAPI
-# pattern (dependency injection), not a mutable-default bug — exempt from B008.
-extend-immutable-calls = [
-    "fastapi.Depends",
-    "fastapi.Query",
-    "fastapi.Header",
-    "fastapi.Path",
-    "fastapi.Body",
-    "fastapi.Form",
-    "fastapi.File",
-    "fastapi.Cookie",
-    "fastapi.Security",
-]
