@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  id-token: write   # required for OIDC — GitHub mints a short-lived token, no stored secret
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -15,9 +19,7 @@ jobs:
       - name: Azure login
         uses: azure/login@v2
         with:
-          auth-type: SERVICE_PRINCIPAL
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
