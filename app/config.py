@@ -1,5 +1,8 @@
 """Configuration and secrets supplied by the environment."""
 
+from typing import Annotated
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,9 +28,12 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5:3b"
     llm_timeout_s: float = 60.0
 
-    # No default on purpose: the app refuses to start without a key, so auth can
-    # never be silently disabled by a missing env var.
-    service_api_key: str
+    # No default and non-empty on purpose: the app refuses to start without a
+    # real key, so auth can never be silently disabled by a missing OR empty
+    # env var.
+    service_api_key: Annotated[str, Field(min_length=1)]
+    portkey_api_key: str = ""
+    portkey_virtual_key: str = ""
 
 
 settings = Settings()

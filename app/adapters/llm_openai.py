@@ -54,14 +54,19 @@ class OpenAICompatibleLLM:
 
     def __init__(self) -> None:
         """Build the async client, wrapped by Instructor for validated output."""
+        default_headers = None
+        if settings.portkey_api_key:
+            default_headers = {
+                "x-portkey-api-key": settings.portkey_api_key,
+                "x-portkey-virtual-key": settings.portkey_virtual_key,
+            }
         client = AsyncOpenAI(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
             timeout=settings.llm_timeout_s,
+            default_headers=default_headers,
         )
-        self._client = instructor.from_openai(
-            client, mode=instructor.Mode.JSON
-        )  # asking the model to emit JSON object matching the schema
+        self._client = instructor.from_openai(client, mode=instructor.Mode.TOOLS)
         self._model = settings.llm_model
 
     async def assess(self, transcript: str, job_description: str) -> Assessment:
