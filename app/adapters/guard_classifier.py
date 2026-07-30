@@ -29,7 +29,7 @@ from app.domain.models import ScrubResult
 # ("six years") survive — only an actual date of birth is a PII risk. Phones are
 # left to Presidio's BUILT-IN multi-region recogniser (US/UK/DE/FR/IL/IN/CA/BR)
 # rather than a UK-only regex — that's the locale-general choice.
-_ENTITIES = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION", "DOB"]
+_ENTITIES = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION", "DOB", "UK_NINO"]
 
 # Terms Presidio otherwise mislabels (e.g. "Python"/"Go" as a PERSON). The
 # allow_list drops any finding whose text is one of these — stops over-redaction
