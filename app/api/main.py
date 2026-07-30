@@ -41,7 +41,12 @@ app = FastAPI(title="Screening /screen", lifespan=lifespan)
 
 # authentication
 def require_api_key(x_api_key: Annotated[str, Header()] = "") -> None:
-    if not secrets.compare_digest(x_api_key, settings.service_api_key):
+    # Compare as bytes: secrets.compare_digest raises TypeError on non-ASCII str,
+    # which would surface as a 500 instead of a 401. Reject an empty header up
+    # front so a bad/missing key can never slip through.
+    if not x_api_key or not secrets.compare_digest(
+        x_api_key.encode("utf-8"), settings.service_api_key.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key.",
