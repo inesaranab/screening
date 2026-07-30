@@ -1,0 +1,28 @@
+# Virtual env (huge, host-specific — deps get installed fresh by uv sync)
+.venv
+
+# Python caches
+__pycache__
+*.pyc
+*.pyo
+
+# Tooling caches
+.mypy_cache
+.ruff_cache
+.pytest_cache
+
+# Git & CI
+.git
+.github
+
+# Secrets — never let the real env file into the image
+.env
+
+# Tests 
+evals
+
+# Editor / assistant / OS 
+.claude
+.vscode
+.DS_Store
+*.log
