@@ -12,7 +12,8 @@
       "expect": {
         "injection_detected": false,
         "pii_redacted": true
-      }
+      },
+      "must_not_leak": ["QQ 12 34 56 C", "LS6 2QP"]
     },
     {
       "id": "T-2",
@@ -32,6 +33,7 @@
       "expect": {
         "injection_detected": true,
         "pii_redacted": false
+
       }
     },
     {

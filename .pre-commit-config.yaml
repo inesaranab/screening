@@ -1,6 +1,7 @@
 # Pre-commit hooks. Setup:
 #   uv tool install pre-commit     # or: pipx install pre-commit / brew install pre-commit
 #   pre-commit install             # wire it into git (runs on every commit)
+#   pre-commit install --hook-type pre-push  # wire the pre-push stage too (code review)
 #   pre-commit run --all-files     # run now, against the whole repo
 #
 # Keep hook versions current with:  pre-commit autoupdate
@@ -22,3 +23,28 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      # Runs Claude's /code-review over the local diff before every push. If it
+      # finds something to fix, it edits the files directly, then this hook
+      # fails on purpose (worktree is dirty) so the push is blocked and you
+      # can review + commit the fix before pushing again. Requires a clean
+      # worktree going in (so a leftover untracked file can't hide) and
+      # checks `git status --porcelain` — and propagates a claude failure.
+      - id: code-review
+        name: code-review (Claude, pre-push — fixes issues, then fails so you re-commit)
+        entry: |-
+          bash -c '
+          [[ -z "$(git status --porcelain)" ]] ||
+            { echo "code-review requires a clean worktree"; exit 1; }
+          claude -p "/code-review - fix anything you find directly in the files instead of just reporting it" \
+            --allowedTools "Read Grep Glob Edit Bash(git diff*) Bash(git log*) Bash(git status*)" \
+            --permission-mode bypassPermissions ||
+            { echo "code-review failed"; exit 1; }
+          [[ -z "$(git status --porcelain)" ]] ||
+            { echo "code-review made changes - review, commit, and push again"; exit 1; }
+          '
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+        verbose: true

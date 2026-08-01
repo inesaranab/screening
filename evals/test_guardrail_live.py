@@ -38,3 +38,30 @@ async def test_guardrail_matches_expectations(guard, case):
     result = await guard.scrub(case["transcript"])
     for field, want in case["expect"].items():
         assert getattr(result, field) == want
+    for field in case.get("must_not_leak", []):
+        assert field not in result.clean_text
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "nino", ["QQ 12 34 56 C", "QQ123456C", "AB 12 34 56 A", "ZZ 99 99 99 D"]
+)
+async def test_nino_is_redacted(guard, nino):
+    out = await guard.scrub(f"my National Insurance number is {nino}")
+    assert nino not in out.clean_text
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+@pytest.mark.parametrize("postcode", ["LS6 2QP", "SW1A 1AA", "EC1A1BB", "M1 1AE"])
+async def test_uk_postcode_is_redacted(guard, postcode):
+    out = await guard.scrub(f"I live at 14 Marlowe Court, Leeds, {postcode}")
+    assert postcode not in out.clean_text
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_article9_disclosure_is_redacted(guard):
+    out = await guard.scrub("I'm a practising Orthodox Jew so I don't work Fridays.")
+    assert "Orthodox Jew" not in out.clean_text
