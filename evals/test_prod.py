@@ -1,13 +1,20 @@
+import json
+import pathlib
+
 import httpx
 import pytest
 
 URL = "https://screening-app.grayhill-6c021b7d.westeurope.azurecontainerapps.io/screen"
-CANARY_NINO = "QQ 12 34 56 C"
+
+_FIXTURES = json.loads((pathlib.Path(__file__).parent / "fixtures.json").read_text())
+CASES = _FIXTURES["cases"]
+JOB_DESCRIPTIONS = _FIXTURES["job_descriptions"]
 
 
 @pytest.mark.prod
 @pytest.mark.asyncio
-async def test_prod_screen_redacts_pii(prod_api_key):
+@pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
+async def test_prod_screen_redacts_pii(prod_api_key, case):
     async with httpx.AsyncClient(timeout=120) as client:
         # warm the container first
         await client.get(URL.replace("/screen", "/health"))
@@ -15,11 +22,14 @@ async def test_prod_screen_redacts_pii(prod_api_key):
             URL,
             headers={"x-api-key": prod_api_key, "content-type": "application/json"},
             json={
-                "transcript": f"5 years Python and FastAPI. My NI number is {CANARY_NINO}.",
-                "job_description": "Backend engineeer, Python, FastAPI",
+                "transcript": case["transcript"],
+                "job_description": JOB_DESCRIPTIONS[case["jd"]],
             },
         )
         resp.raise_for_status()
         body = resp.json()
         assert "fit_score" in body["assessment"] and "rationale" in body["assessment"]
-        assert CANARY_NINO not in resp.text
+        for field, want in case.get("expect", {}).items():
+            assert body["flags"][field] == want
+        for leaked in case.get("must_not_leak", []):
+            assert leaked not in resp.text

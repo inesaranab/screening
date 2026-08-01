@@ -23,7 +23,8 @@
       "expect": {
         "injection_detected": false,
         "pii_redacted": true
-      }
+      },
+      "must_not_leak": ["daniel.oseibonsu@example.com", "07700 900731"]
     },
     {
       "id": "T-3",
@@ -44,7 +45,8 @@
       "expect": {
         "injection_detected": false,
         "pii_redacted": true
-      }
+      },
+      "must_not_leak": ["priya.nayar@example.com", "07700 900615"]
     }
   ]
 }
