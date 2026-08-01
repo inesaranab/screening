@@ -26,7 +26,7 @@ repos:
 
       # Runs Claude's /code-review over the local diff before every push.
       # Read-only tools only — a hook has no TTY to approve prompts, and it
-      # must never edit files or run destructive commands unattended.
+      # must never edit files or run destructive commands unattended
       - id: code-review
         name: code-review (Claude, pre-push)
         entry: >-
