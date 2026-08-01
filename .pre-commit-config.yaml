@@ -24,16 +24,21 @@ repos:
         types: [python]
         pass_filenames: false
 
-      # Runs Claude's /code-review over the local diff before every push.
-      # Read-only tools only — a hook has no TTY to approve prompts, and it
-      # must never edit files or run destructive commands unattended
+      # Runs Claude's /code-review over the local diff before every push. If it
+      # finds something to fix, it edits the files directly, then this hook
+      # fails on purpose (git diff is non-empty) so the push is blocked and
+      # you can review + commit the fix before pushing again.
       - id: code-review
-        name: code-review (Claude, pre-push)
+        name: code-review (Claude, pre-push — fixes issues, then fails so you re-commit)
         entry: >-
-          claude -p "/code-review"
-          --allowedTools "Read Grep Glob Bash(git diff*) Bash(git log*) Bash(git status*)"
-          --permission-mode bypassPermissions
+          bash -c '
+            claude -p "/code-review - fix anything you find directly in the files instead of just reporting it"
+            --allowedTools "Read Grep Glob Edit Bash(git diff*) Bash(git log*) Bash(git status*)"
+            --permission-mode bypassPermissions;
+            git diff --quiet || { echo "code-review made changes - review, commit, and push again"; exit 1; }
+          '
         language: system
         stages: [pre-push]
         pass_filenames: false
         always_run: true
+        verbose: true
