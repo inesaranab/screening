@@ -10,7 +10,9 @@ wheels/
 .venv
 
 # Secrets — never commit the real env file (the .example is the template)
+.env*
 .env
+
 
 # Editor / assistant local dirs — but keep the authored agent skills (they show
 # how the AI was guided; see .claude/skills/README.md)

@@ -19,6 +19,7 @@ from functools import cache
 
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
 from presidio_analyzer.nlp_engine import NlpEngineProvider
+from presidio_analyzer.predefined_recognizers import GLiNERRecognizer
 from presidio_anonymizer import AnonymizerEngine
 from starlette.concurrency import run_in_threadpool
 from transformers import pipeline
@@ -29,7 +30,21 @@ from app.domain.models import ScrubResult
 # ("six years") survive — only an actual date of birth is a PII risk. Phones are
 # left to Presidio's BUILT-IN multi-region recogniser (US/UK/DE/FR/IL/IN/CA/BR)
 # rather than a UK-only regex — that's the locale-general choice.
-_ENTITIES = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION", "DOB", "UK_NINO"]
+_ENTITIES = [
+    "PERSON",
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "LOCATION",
+    "DOB",
+    "UK_NINO",
+    "RELIGION",
+    "HEALTH",
+    "DISABILITY",
+    "SEXUAL_ORIENTATION",
+    "TRADE_UNION",
+    "POLITICAL_OPINION",
+    "ETHNICITY",
+]
 
 # Terms Presidio otherwise mislabels (e.g. "Python"/"Go" as a PERSON). The
 # allow_list drops any finding whose text is one of these — stops over-redaction
@@ -53,6 +68,9 @@ _ALLOW = [
     "Kafka",
 ]
 
+# Pronuns that GLiNER mistakes with <PERSON>
+_PRONOUNS = {"i", "you", "he", "she", "we", "they", "it"}
+
 # A date of birth, in the forms "3 March 1990" and "03/03/1990". Requires a day
 # number, so "March 2027" / "six years" don't match. Date formats are fairly
 # international, so this stays reasonably locale-general.
@@ -66,6 +84,34 @@ _DOB = [
     ),
     Pattern(name="dob_numeric", regex=r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", score=0.85),
 ]
+
+# UK National Insurance number: 2 prefix letters, 6 digits, 1 suffix letter (A–D),
+# with optional spaces ("AB 12 34 56 C" or "AB123456C"). Presidio's built-in
+# UkNinoRecognizer did NOT fire on these spaced formats in practice, so we register
+# an explicit pattern — same approach as DOB. Deliberately permissive on the prefix
+# letters (not restricted to HMRC's officially-issued combinations): HMRC's own
+# specimen number "QQ123456C" — used throughout their docs and commonly copy-pasted
+# into test data — uses a letter (Q) that's never issued to a real person, so a
+# strict pattern misses exactly the kind of example text most likely to appear.
+# For a redaction guardrail, over-matching a NINO-shaped string is the safe
+# failure direction; under-matching a real one is not.
+_NINO = [
+    Pattern(
+        name="uk_nino",
+        regex=r"\b[A-Za-z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-Za-z]\b",
+        score=0.85,
+    ),
+]
+
+_GLINER_ENTITIES = {
+    "religion": "RELIGION",
+    "health condition": "HEALTH",
+    "disability": "DISABILITY",
+    "sexual orientation": "SEXUAL_ORIENTATION",
+    "trade union membership": "TRADE_UNION",
+    "political opinion": "POLITICAL_OPINION",
+    "ethnicity": "ETHNICITY",
+}
 
 _INJECTION_MODEL = "protectai/deberta-v3-base-prompt-injection-v2"
 # Flag when the INJECTION probability reaches this.
@@ -118,6 +164,12 @@ class ClassifierGuardrail:
         )
         self._analyzer.registry.add_recognizer(
             PatternRecognizer(supported_entity="DOB", patterns=_DOB)
+        )
+        self._analyzer.registry.add_recognizer(
+            PatternRecognizer(supported_entity="UK_NINO", patterns=_NINO)
+        )
+        self._analyzer.registry.add_recognizer(
+            GLiNERRecognizer(entity_mapping=_GLINER_ENTITIES)
         )
         self._anonymizer = AnonymizerEngine()
         self._classifier = _injection_classifier()
@@ -174,6 +226,15 @@ class ClassifierGuardrail:
         found = self._analyzer.analyze(
             text=text, language="en", entities=_ENTITIES, allow_list=_ALLOW
         )
+
+        found = [
+            r
+            for r in found
+            if not (
+                r.entity_type == "PERSON"
+                and text[r.start : r.end].strip().lower() in _PRONOUNS
+            )
+        ]
         # Presidio's analyzer and anonymizer each define their own (identical)
         # RecognizerResult class; passing analyzer results in is the documented,
         # runtime-correct usage, so ty's cross-class mismatch is a false positive.

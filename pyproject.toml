@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "en-core-web-sm",
     "fastapi[standard]>=0.139.2",
+    "gliner>=0.2.24",
     "instructor>=1.15.4",
     "openai>=2.47.0",
     "pip>=26.1.2",
@@ -26,12 +27,14 @@ en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/dow
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "tdd-guard-pytest>=0.1.2",
     "ty>=0.0.63",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-markers = ["live: hits real models / network (slow)"]
+markers = ["live: hits real models / network (slow)", "prod: hits the deployed prod endpoint"]
+tdd_guard_project_root = "/Users/inesarana/screening"
 
 [tool.fastapi]
 entrypoint = "app.api.main:app"
