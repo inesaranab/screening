@@ -32,10 +32,10 @@ repos:
         name: code-review (Claude, pre-push — fixes issues, then fails so you re-commit)
         entry: >-
           bash -c '
-            claude -p "/code-review - fix anything you find directly in the files instead of just reporting it"
-            --allowedTools "Read Grep Glob Edit Bash(git diff*) Bash(git log*) Bash(git status*)"
-            --permission-mode bypassPermissions;
-            git diff --quiet || { echo "code-review made changes - review, commit, and push again"; exit 1; }
+          claude -p "/code-review - fix anything you find directly in the files instead of just reporting it"
+          --allowedTools "Read Grep Glob Edit Bash(git diff*) Bash(git log*) Bash(git status*)"
+          --permission-mode bypassPermissions;
+          git diff --quiet || { echo "code-review made changes - review, commit, and push again"; exit 1; }
           '
         language: system
         stages: [pre-push]
