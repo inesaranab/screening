@@ -54,6 +54,14 @@ async def test_nino_is_redacted(guard, nino):
 
 @pytest.mark.live
 @pytest.mark.asyncio
+@pytest.mark.parametrize("postcode", ["LS6 2QP", "SW1A 1AA", "EC1A1BB", "M1 1AE"])
+async def test_uk_postcode_is_redacted(guard, postcode):
+    out = await guard.scrub(f"I live at 14 Marlowe Court, Leeds, {postcode}")
+    assert postcode not in out.clean_text
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
 async def test_article9_disclosure_is_redacted(guard):
     out = await guard.scrub("I'm a practising Orthodox Jew so I don't work Fridays.")
     assert "Orthodox Jew" not in out.clean_text

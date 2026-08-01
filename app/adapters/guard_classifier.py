@@ -37,6 +37,7 @@ _ENTITIES = [
     "LOCATION",
     "DOB",
     "UK_NINO",
+    "UK_POSTCODE",
     "RELIGION",
     "HEALTH",
     "DISABILITY",
@@ -85,7 +86,7 @@ _DOB = [
     Pattern(name="dob_numeric", regex=r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", score=0.85),
 ]
 
-# UK National Insurance number: 2 prefix letters, 6 digits, 1 suffix letter (A–D),
+# UK National Insurance number: 2 prefix letters, 6 digits, 1 suffix letter (A-D),
 # with optional spaces ("AB 12 34 56 C" or "AB123456C"). Presidio's built-in
 # UkNinoRecognizer did NOT fire on these spaced formats in practice, so we register
 # an explicit pattern — same approach as DOB. Deliberately permissive on the prefix
@@ -99,6 +100,19 @@ _NINO = [
     Pattern(
         name="uk_nino",
         regex=r"\b[A-Za-z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-Za-z]\b",
+        score=0.85,
+    ),
+]
+
+# UK postcode ("LS6 2QP", "SW1A 1AA", "EC1A1BB"). Presidio's built-in
+# UkPostcodeRecognizer is disabled by default and LOCATION/spaCy doesn't
+# reliably catch the postcode segment itself, so we register an explicit
+# pattern — same reasoning as NINO: over-matching a postcode-shaped string
+# is the safe failure direction for a redaction guardrail.
+_POSTCODE = [
+    Pattern(
+        name="uk_postcode",
+        regex=r"\b[A-Za-z]{1,2}\d[A-Za-z\d]?\s?\d[A-Za-z]{2}\b",
         score=0.85,
     ),
 ]
@@ -167,6 +181,9 @@ class ClassifierGuardrail:
         )
         self._analyzer.registry.add_recognizer(
             PatternRecognizer(supported_entity="UK_NINO", patterns=_NINO)
+        )
+        self._analyzer.registry.add_recognizer(
+            PatternRecognizer(supported_entity="UK_POSTCODE", patterns=_POSTCODE)
         )
         self._analyzer.registry.add_recognizer(
             GLiNERRecognizer(entity_mapping=_GLINER_ENTITIES)

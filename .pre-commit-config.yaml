@@ -1,6 +1,7 @@
 # Pre-commit hooks. Setup:
 #   uv tool install pre-commit     # or: pipx install pre-commit / brew install pre-commit
 #   pre-commit install             # wire it into git (runs on every commit)
+#   pre-commit install --hook-type pre-push  # wire the pre-push stage too (code review)
 #   pre-commit run --all-files     # run now, against the whole repo
 #
 # Keep hook versions current with:  pre-commit autoupdate
@@ -22,3 +23,17 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      # Runs Claude's /code-review over the local diff before every push.
+      # Read-only tools only — a hook has no TTY to approve prompts, and it
+      # must never edit files or run destructive commands unattended.
+      - id: code-review
+        name: code-review (Claude, pre-push)
+        entry: >-
+          claude -p "/code-review"
+          --allowedTools "Read Grep Glob Bash(git diff*) Bash(git log*) Bash(git status*)"
+          --permission-mode bypassPermissions
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
