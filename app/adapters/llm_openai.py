@@ -7,13 +7,19 @@ validated Pydantic object directly (and reasks the model on malformed output).
 import logging
 
 import instructor
-from deepeval.tracing import observe, update_current_trace
 from openai import AsyncOpenAI
 
 from app.config import settings
 from app.domain.models import Assessment
 
 logger = logging.getLogger("screen")
+
+# Deliberately no eval instrumentation in this module. Tracing `assess()` would
+# mean a third party (Confident AI) receiving every candidate transcript the
+# moment a key is present, and a judge call billed on 100% of live traffic, to
+# produce a score that can never be reproduced against a changed prompt. Quality
+# is measured offline instead, by replaying persisted assessments through
+# `evals/` — same metrics, same Portkey judge, on a sample we control.
 
 _SYSTEM = """You are a recruitment screening assistant. You produce decision-support \
 for a HUMAN recruiter who reviews everything you output — you never make a final \
@@ -71,7 +77,6 @@ class OpenAICompatibleLLM:
         self._client = instructor.from_openai(client, mode=instructor.Mode.TOOLS)
         self._model = settings.llm_model
 
-    @observe(type="llm", metric_collection="screening-quality")
     async def assess(self, transcript: str, job_description: str) -> Assessment:
         """Assess a scrubbed transcript against a job description.
 
@@ -109,16 +114,6 @@ class OpenAICompatibleLLM:
                     "completion_tokens": usage.completion_tokens,
                     "total_tokens": usage.total_tokens,
                 }
-            },
-        )
-
-        update_current_trace(
-            input=job_description,
-            output=f"{assessment.rationale} {' '.join(assessment.evidence)}",
-            retrieval_context=[transcript, job_description],
-            metadata={
-                "fit_score": assessment.fit_score,
-                "next_step": assessment.next_step,
             },
         )
 

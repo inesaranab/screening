@@ -4,7 +4,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688)
 ![PII](https://img.shields.io/badge/PII-Presidio%20%2B%20GLiNER-4c8b2b)
 ![Injection](https://img.shields.io/badge/injection-classifier-4c8b2b)
-![Quality](https://img.shields.io/badge/quality-Braintrust-4c8b2b)
+![Quality](https://img.shields.io/badge/quality-DeepEval-4c8b2b)
 ![Tests](https://img.shields.io/badge/tests-pytest-4c8b2b)
 ![License](https://img.shields.io/badge/license-MIT-4c8b2b)
 
@@ -65,8 +65,14 @@ uv run pytest -m "not live and not prod"   # deterministic — no model, no netw
 uv run pytest -m live                      # hits the real Presidio + GLiNER + injection classifier (+ a live LLM)
 uv run pytest -m prod --run-prod           # hits the deployed prod endpoint (needs az login; opt-in on purpose)
 
-uv run braintrust eval evals/eval_quality.py   # output-quality experiment (costs tokens; needs BRAINTRUST_API_KEY)
+uv run deepeval test run evals/test_quality.py   # output-quality evals (costs tokens — a live LLM plus a judge LLM)
 ```
+
+> The quality suite **must** be launched via `deepeval test run`, not plain `pytest -m quality`.
+> It scores the live `@observe` trace produced by the LLM adapter, and only deepeval's own runner
+> keeps that trace open for the duration of the test body — under bare `pytest` every case fails
+> with `DeepEvalError: No active trace found for this test`. CI deselects the marker (`not quality`)
+> for the same reason.
 
 - **Deterministic** tests use fakes behind the ports (canned + deliberately malformed LLM output),
   so they're fast and reproducible. Run in CI.
@@ -77,11 +83,10 @@ uv run braintrust eval evals/eval_quality.py   # output-quality experiment (cost
   every fixture, asserting both the safety flags (`injection_detected`, `pii_redacted`) and exact
   strings that must never leak into the response. Gated behind `--run-prod` so it can never fire by
   accident — the same discipline `evals/conftest.py` applies via `pytest_addoption`.
-- **Quality** is deliberately *not* a pytest tier. It runs as a Braintrust experiment
-  (`uv run braintrust eval evals/eval_quality.py`), judging `rationale`/`evidence` through the same
-  Portkey gateway the app itself uses. Different question from the safety tests above (*is the score
-  honest*, not *did PII leak*), and a different shape of answer: a scored run you compare against the
-  previous one, not a pass/fail bit.
+- **Quality** tests (`evals/test_quality.py`, marker `quality`) judge `rationale`/`evidence` with
+  DeepEval metrics, through the same Portkey gateway the app itself uses. Different question from
+  the safety tests above (*is the score honest*, not *did PII leak*). Kept out of CI because it
+  costs tokens on every run and its verdict is a judge's opinion, not a deterministic bit.
 
 ---
 
@@ -89,12 +94,13 @@ uv run braintrust eval evals/eval_quality.py   # output-quality experiment (cost
 
 The safety tests (live/prod, above) answer *"did anything leak, did injection get caught."*
 None of them answer the harder question: **is the `Assessment` itself any good** — grounded,
-on-topic, and fair? That's what `evals/metrics.py` checks, run as a **Braintrust** experiment and
-judged by a model routed through the same Portkey gateway the app uses in production — an eval that
-judged through a different provider than production would be measuring a model we do not ship.
+on-topic, and fair? That's what `evals/metrics.py` checks, run as **DeepEval** metrics and judged by
+a model routed through the same Portkey gateway the app uses in production (`evals/judge.py`) — an
+eval that judged through a different provider than production would be measuring a model we do not
+ship.
 
-Each run is an experiment: Braintrust diffs it against the previous one and reports per-scorer
-improvements and regressions, which is the point of using it over a threshold assertion.
+Each metric carries a threshold, so a run is pass/fail per case; with `CONFIDENT_API_KEY` set the
+run is also uploaded to Confident AI, where successive runs can be compared.
 
 Every metric judges the same thing — the LLM's `rationale` + `evidence` (the `output`) — but
 compares it against something different:
@@ -131,34 +137,26 @@ age, visa status, union membership — the same categories GLiNER exists to reda
 `JobRelevantScoring` classifier exists specifically to close that gap, encoding this app's own
 system-prompt rule ("judge only on job-relevant evidence") as a scorable criterion.
 
-**Two scorers are hand-written rather than taken off the shelf,** both because the stock
-`autoevals` versions do not survive contact with this project's judge (Portkey → OpenRouter →
-Gemini):
+**How `JobRelevantScoring` is built:** a DeepEval `DAGMetric` — a two-question decision tree rather
+than a single prompt. The root asks *does the text reference a protected characteristic at all*; only
+if it does do we ask the harder follow-up, *was it used to justify the score, or merely mentioned*.
+The leaves score 0 (used to justify), 5 (mentioned only) and 10 (never mentioned); DeepEval divides
+by 10, and the metric's threshold of `0.5` is what keeps the follow-up meaningful — mentioning
+passes, scoring on it fails. A threshold of `1.0` would collapse both branches into the same failure
+and make the second question pointless.
 
-- **Relevancy** — `autoevals.AnswerRelevancy` is the RAGAS formulation, which needs an
-  *embeddings* endpoint. The gateway serves chat completions only, so the stock scorer cannot run
-  against the model we actually ship. The replacement asks the judge the same question the
-  definition above states, with one call instead of a vector comparison.
-- **Faithfulness** — `autoevals.Faithfulness` extracts claims from `expected`, not `output`. This
-  eval has no ground-truth assessment to compare against (the question is *is the generated text
-  grounded*, not *does it match a reference*), so it scored every case on an empty claim list and
-  raised `ZeroDivisionError`. Its response schema also uses JSON-Schema `$defs`/`$ref`, which this
-  judge flattens into bare strings. The replacement keeps the original metric exactly — supported
-  claims / total claims — over a flat, inline schema that round-trips correctly.
-
-**The experiment calls the LLM adapter directly, bypassing the guardrail.** It measures the model,
-not the pipeline, so the transcripts it sends are the *raw* fixtures — not the GLiNER-redacted text
-the model sees in production. That makes `JobRelevantScoring` a pessimistic lower bound: it can
-penalise the model for quoting a protected characteristic that would never have reached it in a real
-request. Worth being explicit about, because the number is otherwise easy to misread.
+**The quality run goes through `ScreenService`, not the LLM adapter directly.** The model is judged
+on guardrail-scrubbed text — exactly what it receives in production. Calling the adapter directly
+would feed it the raw fixtures and penalise it for quoting PII that would never have reached it,
+turning `JobRelevantScoring` into a pessimistic number that's easy to misread.
 
 **What's deliberately *not* measured yet:** whether `next_step` follows logically from
 `fit_score` — a schema-consistency check, not a grounding one. Worth a scorer of its own.
 
-The adversarial fixture (`T-3`) is excluded from the experiment, and by its declared expectation
-rather than by id: the guardrail withholds an injected transcript and the model is never called, so
-there is no assessment text to judge. That the withholding happens at all is asserted by the live
-and prod tests instead.
+The adversarial fixture is excluded from the quality run, and by its declared expectation
+(`expect.injection_detected`) rather than by id: the guardrail withholds an injected transcript and
+the model is never called, so there is no assessment text to judge. That the withholding happens at
+all is asserted by the live and prod tests instead.
 
 ---
 
@@ -168,12 +166,12 @@ and prod tests instead.
 |---|---|
 | **Structured, validated output** | `instructor` + Pydantic `Assessment`: `fit_score` constrained `1–5`, `rationale`/`evidence`/`next_step` enforced by the schema. Malformed model output → bounded re-ask (`max_retries=2`), then a mapped `502`. |
 | **Guardrail** | Presidio (structured PII: email, phone, DOB, UK NINO, UK postcode) + **GLiNER** (zero-shot, catches GDPR Article 9 special categories — religion, health, disability, sexual orientation, trade union, political opinion, ethnicity) + a trained injection classifier. **Fail-closed**: detected injection withholds the transcript — the model is never called. |
-| **Eval harness** | pytest, three-way split: deterministic (fakes, CI) / live (real guardrail + LLM, local) / prod (real deployed endpoint, opt-in via `--run-prod`) — plus a **Braintrust** experiment for output quality, run separately because its output is a score to compare, not a bit to assert. |
+| **Eval harness** | pytest, three-way split: deterministic (fakes, CI) / live (real guardrail + LLM, local) / prod (real deployed endpoint, opt-in via `--run-prod`) — plus a **DeepEval** `quality` tier for output quality, run separately via `deepeval test run` because it costs tokens on every run. |
 | **Auth** | `x-api-key` header, `secrets.compare_digest` (constant-time compare: checks the whole key regardless of where it differs, so response timing can't be used to guess the key character by character). |
 | **Secrets** | pydantic-settings from env/`.env`; no key default — the app **refuses to start** without one, so a real key can never be silently missing. |
 | **Error handling & logging** | Timeout→504, connection→503, bad model output→502; catch-all fails closed. Structured **JSON logs, metadata only** (see [Blind spots](#guardrail-blind-spots-what-it-does-not-catch)). |
 | **Cost awareness** | Per-call token usage logged (`llm_usage`); see [Cost awareness](#cost-awareness). |
-| **Model routing** | Local dev talks straight to Ollama. Production: app → **Portkey** (gateway — sits in front of the app's LLM calls; observability/logging/retries, one stable endpoint) → **OpenRouter** (provider aggregator — holds API access to many vendors under one key) → Gemini (the model actually generating the response). Swapping providers/models is an env var, not a code change. Same gateway is reused as the Braintrust judge endpoint, and `wrap_openai` + `wrap_instructor` trace the live call path when `SCREENING_BRAINTRUST_API_KEY` is set (absent, tracing is a no-op and the app is unchanged). |
+| **Model routing** | Local dev talks straight to Ollama. Production: app → **Portkey** (gateway — sits in front of the app's LLM calls; observability/logging/retries, one stable endpoint) → **OpenRouter** (provider aggregator — holds API access to many vendors under one key) → Gemini (the model actually generating the response). Swapping providers/models is an env var, not a code change. Same gateway is reused as the DeepEval judge endpoint, and `@observe` on `assess()` traces the live call path when `CONFIDENT_API_KEY` is set (absent, tracing is disabled outright so nothing is emitted and the app is unchanged). |
 
 ---
 
@@ -294,11 +292,11 @@ flowchart LR
     llm --> gateway["Portkey gateway"]
     gateway --> model["Ollama (local) / Gemini via OpenRouter (prod)"]
 
-    de["Braintrust experiment<br/>(faithfulness, relevancy,<br/>bias, job-relevance)"] -.-> gateway
+    de["DeepEval quality evals<br/>(faithfulness, relevancy,<br/>bias, PII, job-relevance)"] -.-> gateway
     contract -.-> de
 ```
 
-Solid arrows are the live request path; dotted arrows are evaluation-only (the Braintrust experiment
+Solid arrows are the live request path; dotted arrows are evaluation-only (the DeepEval quality tier
 runs offline against fixtures, never in the request path itself, but shares the same Portkey judge
 model).
 

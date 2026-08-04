@@ -1,5 +1,6 @@
 # evals/conftest.py
 import os
+import pathlib
 import shutil
 import subprocess
 
@@ -7,9 +8,18 @@ import pytest
 
 from app.domain.models import Assessment, ScrubResult
 
-# Set before any test module imports transformers/presidio, so every test run
-# skips the Hub freshness check and loads straight from the local cache.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
+# Set before any test module imports transformers/presidio, so a run whose
+# weights are already cached skips the Hub freshness check and loads straight
+# from disk. Guarded on the cache actually existing: forcing offline mode
+# unconditionally makes the very first run on a clean machine fail with
+# `OfflineModeIsEnabled` instead of downloading Presidio/spaCy/GLiNER/the
+# injection classifier.
+_HF_HUB_CACHE = (
+    pathlib.Path(os.environ.get("HF_HOME", pathlib.Path.home() / ".cache/huggingface"))
+    / "hub"
+)
+if _HF_HUB_CACHE.is_dir() and any(_HF_HUB_CACHE.iterdir()):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
 def pytest_addoption(parser):
