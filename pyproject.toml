@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "deepeval>=4.1.5",
     "en-core-web-sm",
     "fastapi[standard]>=0.139.2",
     "gliner>=0.2.24",
@@ -33,7 +34,11 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-markers = ["live: hits real models / network (slow)", "prod: hits the deployed prod endpoint"]
+markers = [
+    "live: hits real models / network (slow)",
+    "prod: hits the deployed prod endpoint",
+    "quality: hits a live LLM plus a judge LLM for output-quality evals (costs tokens)"
+]
 tdd_guard_project_root = "."
 
 [tool.fastapi]

@@ -7,6 +7,7 @@ validated Pydantic object directly (and reasks the model on malformed output).
 import logging
 
 import instructor
+from deepeval.tracing import observe, update_current_trace
 from openai import AsyncOpenAI
 
 from app.config import settings
@@ -66,9 +67,11 @@ class OpenAICompatibleLLM:
             timeout=settings.llm_timeout_s,
             default_headers=default_headers,
         )
+
         self._client = instructor.from_openai(client, mode=instructor.Mode.TOOLS)
         self._model = settings.llm_model
 
+    @observe(type="llm", metric_collection="screening-quality")
     async def assess(self, transcript: str, job_description: str) -> Assessment:
         """Assess a scrubbed transcript against a job description.
 
@@ -106,6 +109,16 @@ class OpenAICompatibleLLM:
                     "completion_tokens": usage.completion_tokens,
                     "total_tokens": usage.total_tokens,
                 }
+            },
+        )
+
+        update_current_trace(
+            input=job_description,
+            output=f"{assessment.rationale} {' '.join(assessment.evidence)}",
+            retrieval_context=[transcript, job_description],
+            metadata={
+                "fit_score": assessment.fit_score,
+                "next_step": assessment.next_step,
             },
         )
 

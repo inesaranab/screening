@@ -1,10 +1,15 @@
 # evals/conftest.py
+import os
 import shutil
 import subprocess
 
 import pytest
 
 from app.domain.models import Assessment, ScrubResult
+
+# Set before any test module imports transformers/presidio, so every test run
+# skips the Hub freshness check and loads straight from the local cache.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
 def pytest_addoption(parser):
@@ -20,6 +25,23 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "prod" in item.keywords:
             item.add_marker(skip_prod)
+
+
+@pytest.fixture(scope="session")
+def guardrail():
+    """The real guardrail, built once for the entire test session.
+
+    Loading Presidio, spaCy, GLiNER and the injection classifier costs ~30s and
+    several GB of RAM, so a per-test (function-scoped) fixture pays that cost once
+    per test — six tests meant six full loads. Session scope means one load no
+    matter which files or how many tests are selected.
+
+    Imported inside the function so importing this conftest stays cheap, and so
+    HF_HUB_OFFLINE above is already set before transformers/presidio load.
+    """
+    from app.adapters.guard_classifier import ClassifierGuardrail
+
+    return ClassifierGuardrail()
 
 
 @pytest.fixture

@@ -2,8 +2,9 @@
 
 ![Python](https://img.shields.io/badge/python-3.14-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688)
-![PII](https://img.shields.io/badge/PII-Presidio-4c8b2b)
+![PII](https://img.shields.io/badge/PII-Presidio%20%2B%20GLiNER-4c8b2b)
 ![Injection](https://img.shields.io/badge/injection-classifier-4c8b2b)
+![Quality](https://img.shields.io/badge/quality-Braintrust-4c8b2b)
 ![Tests](https://img.shields.io/badge/tests-pytest-4c8b2b)
 ![License](https://img.shields.io/badge/license-MIT-4c8b2b)
 
@@ -60,15 +61,104 @@ The **injection** (*manipulation* — text that tries to hijack the model's inst
 ## Run the evals
 
 ```bash
-uv run pytest -m "not live"   # deterministic — no model, no network. Run these in CI.
-uv run pytest -m live         # hits the real Presidio + injection classifier (+ a live LLM for the LLM test)
+uv run pytest -m "not live and not prod"   # deterministic — no model, no network. Run these in CI.
+uv run pytest -m live                      # hits the real Presidio + GLiNER + injection classifier (+ a live LLM)
+uv run pytest -m prod --run-prod           # hits the deployed prod endpoint (needs az login; opt-in on purpose)
+
+uv run braintrust eval evals/eval_quality.py   # output-quality experiment (costs tokens; needs BRAINTRUST_API_KEY)
 ```
 
 - **Deterministic** tests use fakes behind the ports (canned + deliberately malformed LLM output),
-  so they're fast and reproducible.
+  so they're fast and reproducible. Run in CI.
 - **Live** tests exercise the real guardrail over genuine transcripts in
   `evals/fixtures.json` (`T-1`…`T-4`), including an **adversarial** (an embedded
   prompt injection).
+- **Prod** tests (`evals/test_prod.py`) hit the actual deployed Container App, parametrized over
+  every fixture, asserting both the safety flags (`injection_detected`, `pii_redacted`) and exact
+  strings that must never leak into the response. Gated behind `--run-prod` so it can never fire by
+  accident — the same discipline `evals/conftest.py` applies via `pytest_addoption`.
+- **Quality** is deliberately *not* a pytest tier. It runs as a Braintrust experiment
+  (`uv run braintrust eval evals/eval_quality.py`), judging `rationale`/`evidence` through the same
+  Portkey gateway the app itself uses. Different question from the safety tests above (*is the score
+  honest*, not *did PII leak*), and a different shape of answer: a scored run you compare against the
+  previous one, not a pass/fail bit.
+
+---
+
+## Evaluation — what we check in the LLM's response
+
+The safety tests (live/prod, above) answer *"did anything leak, did injection get caught."*
+None of them answer the harder question: **is the `Assessment` itself any good** — grounded,
+on-topic, and fair? That's what `evals/metrics.py` checks, run as a **Braintrust** experiment and
+judged by a model routed through the same Portkey gateway the app uses in production — an eval that
+judged through a different provider than production would be measuring a model we do not ship.
+
+Each run is an experiment: Braintrust diffs it against the previous one and reports per-scorer
+improvements and regressions, which is the point of using it over a threshold assertion.
+
+Every metric judges the same thing — the LLM's `rationale` + `evidence` (the `output`) — but
+compares it against something different:
+
+| Metric | Question it answers | Compared against |
+|---|---|---|
+| **Faithfulness** | Did it invent something? | `transcript` **+** `job_description` — a claim must not contradict either (see below for why both) |
+| **Relevancy** | Is every sentence on topic for the role? | `job_description` — this is what defines what "relevant" even means |
+| **Bias** | Any unfair opinion in the text? | Nothing external — four fixed categories: gender, political, racial/ethnic, geographical |
+| **JobRelevantScoring** (custom classifier) | Did scoring stay off protected characteristics? | `job_description` + our own criteria — covers the categories the `Bias` scorer *doesn't*: disability, age, visa status, religion, union membership |
+
+**Why Faithfulness checks against both transcript and job description, not transcript alone:**
+some claims are compound — *"the candidate's six years of Python experience meets the job's
+requirement"* blends a transcript fact (six years, Python) with a job-description fact (Python
+is required). Checking only the transcript half would let a model misrepresent what the role
+actually asks for and never get caught.
+
+**What "on-topic" concretely means for Relevancy:** every individual sentence in the
+`rationale`/`evidence` must engage with something the job description actually asks for — a
+skill, a requirement, a responsibility — not just be *true* about the candidate. A sentence can
+be 100% factually correct and still drag the score down if it's a tangent, caveat, or pleasantry
+unrelated to the role. Example, against T-1's job description (Senior Backend Engineer —
+Python, Go, AWS, Postgres, reliability):
+- **On-topic**: *"The candidate has six years of experience on payments systems using Python
+  and Go."*
+- **Off-topic, even though true**: *"The candidate mentioned they have a hearing impairment and
+  prefer written follow-ups."* — a real transcript fact, but it doesn't engage anything the JD
+  asked for. (This is also exactly the kind of sentence `JobRelevantScoring` watches for, from
+  a fairness angle rather than a topicality one.)
+
+**Why the `Bias` scorer alone isn't enough for a hiring tool:** its four categories don't
+cover the protected characteristics this app's own transcripts actually contain (disability,
+age, visa status, union membership — the same categories GLiNER exists to redact). The custom
+`JobRelevantScoring` classifier exists specifically to close that gap, encoding this app's own
+system-prompt rule ("judge only on job-relevant evidence") as a scorable criterion.
+
+**Two scorers are hand-written rather than taken off the shelf,** both because the stock
+`autoevals` versions do not survive contact with this project's judge (Portkey → OpenRouter →
+Gemini):
+
+- **Relevancy** — `autoevals.AnswerRelevancy` is the RAGAS formulation, which needs an
+  *embeddings* endpoint. The gateway serves chat completions only, so the stock scorer cannot run
+  against the model we actually ship. The replacement asks the judge the same question the
+  definition above states, with one call instead of a vector comparison.
+- **Faithfulness** — `autoevals.Faithfulness` extracts claims from `expected`, not `output`. This
+  eval has no ground-truth assessment to compare against (the question is *is the generated text
+  grounded*, not *does it match a reference*), so it scored every case on an empty claim list and
+  raised `ZeroDivisionError`. Its response schema also uses JSON-Schema `$defs`/`$ref`, which this
+  judge flattens into bare strings. The replacement keeps the original metric exactly — supported
+  claims / total claims — over a flat, inline schema that round-trips correctly.
+
+**The experiment calls the LLM adapter directly, bypassing the guardrail.** It measures the model,
+not the pipeline, so the transcripts it sends are the *raw* fixtures — not the GLiNER-redacted text
+the model sees in production. That makes `JobRelevantScoring` a pessimistic lower bound: it can
+penalise the model for quoting a protected characteristic that would never have reached it in a real
+request. Worth being explicit about, because the number is otherwise easy to misread.
+
+**What's deliberately *not* measured yet:** whether `next_step` follows logically from
+`fit_score` — a schema-consistency check, not a grounding one. Worth a scorer of its own.
+
+The adversarial fixture (`T-3`) is excluded from the experiment, and by its declared expectation
+rather than by id: the guardrail withholds an injected transcript and the model is never called, so
+there is no assessment text to judge. That the withholding happens at all is asserted by the live
+and prod tests instead.
 
 ---
 
@@ -77,12 +167,13 @@ uv run pytest -m live         # hits the real Presidio + injection classifier (+
 | Area | How |
 |---|---|
 | **Structured, validated output** | `instructor` + Pydantic `Assessment`: `fit_score` constrained `1–5`, `rationale`/`evidence`/`next_step` enforced by the schema. Malformed model output → bounded re-ask (`max_retries=2`), then a mapped `502`. |
-| **Guardrail** | Presidio (PII redaction) + a trained injection classifier. **Fail-closed**: detected injection withholds the transcript — the model is never called. |
-| **Eval harness** | pytest, deterministic/live split. |
+| **Guardrail** | Presidio (structured PII: email, phone, DOB, UK NINO, UK postcode) + **GLiNER** (zero-shot, catches GDPR Article 9 special categories — religion, health, disability, sexual orientation, trade union, political opinion, ethnicity) + a trained injection classifier. **Fail-closed**: detected injection withholds the transcript — the model is never called. |
+| **Eval harness** | pytest, three-way split: deterministic (fakes, CI) / live (real guardrail + LLM, local) / prod (real deployed endpoint, opt-in via `--run-prod`) — plus a **Braintrust** experiment for output quality, run separately because its output is a score to compare, not a bit to assert. |
 | **Auth** | `x-api-key` header, `secrets.compare_digest` (constant-time compare: checks the whole key regardless of where it differs, so response timing can't be used to guess the key character by character). |
 | **Secrets** | pydantic-settings from env/`.env`; no key default — the app **refuses to start** without one, so a real key can never be silently missing. |
 | **Error handling & logging** | Timeout→504, connection→503, bad model output→502; catch-all fails closed. Structured **JSON logs, metadata only** (see [Blind spots](#guardrail-blind-spots-what-it-does-not-catch)). |
 | **Cost awareness** | Per-call token usage logged (`llm_usage`); see [Cost awareness](#cost-awareness). |
+| **Model routing** | Local dev talks straight to Ollama. Production: app → **Portkey** (gateway — sits in front of the app's LLM calls; observability/logging/retries, one stable endpoint) → **OpenRouter** (provider aggregator — holds API access to many vendors under one key) → Gemini (the model actually generating the response). Swapping providers/models is an env var, not a code change. Same gateway is reused as the Braintrust judge endpoint, and `wrap_openai` + `wrap_instructor` trace the live call path when `SCREENING_BRAINTRUST_API_KEY` is set (absent, tracing is a no-op and the app is unchanged). |
 
 ---
 
@@ -120,10 +211,17 @@ uv run pytest -m live         # hits the real Presidio + injection classifier (+
   regex-based and still catch. → [what I'd try](#next-multilingual-pii)
 - **The tech-term allow-list is manual.** New skills mislabelled as names (over-redaction) need adding by hand. → [what I'd try](#next-skills-taxonomy)
 - **Injection short-circuits before PII.** A flagged transcript is withheld wholesale and *not* PII-scanned — deliberate (withheld content isn't scored), but worth stating. → [what I'd try](#next-withheld-pii-scan)
+- **Overlapping entity spans can merge into the wrong label.** Observed in a real Portkey trace: an
+  address+postcode span got merged with an adjacent already-anonymized `<EMAIL_ADDRESS>` placeholder
+  and inherited that label instead of `<LOCATION>`/`<UK_POSTCODE>`. Still fully redacted (nothing
+  leaked), but the mislabeling suggests the anonymizer's overlap-resolution isn't robust to every
+  span combination — worth a closer look before trusting entity *type* in logs, not just redaction
+  itself.
 
 ## Next steps
 
-- **No datastore / UI / CI / IaC** — out of scope per the brief.
+- **No datastore / UI / IaC** — out of scope per the brief. (CI/CD now exists — see `DEPLOY.md` —
+  gated by branch protection requiring the `checks` job to pass, including for admins.)
 - **`out_of_scope` flag not fully wired** for genuinely thin transcripts (only set on injection today).
 - **No rate limiting / request quotas** on the endpoint.
 - **Always return a score on normal requests:** split into a required-score `Assessment` (LLM output) + an
@@ -150,6 +248,17 @@ uv run pytest -m live         # hits the real Presidio + injection classifier (+
   ready-made, professionally-maintained catalogue of job skills (e.g. **ESCO** or **O\*NET**), so new
   skills are already recognised and nothing needs adding by hand.
 - <a id="next-withheld-pii-scan"></a>**PII-scan withheld content before logging,** so nothing sensitive leaks into logs even when the transcript is withheld from scoring.
+- **Consider Azure AI Language's managed PII detection.** Self-hosted Presidio hit several real edge
+  cases along the way (a NINO regex that missed HMRC's own specimen number, a UK postcode format
+  Presidio doesn't catch by default, the entity-mislabeling above) — a managed service removes that
+  whole class of bug and adds multilingual support for free, closing the blind spot above too. Given
+  this project is already Azure-first (Container Apps, Key Vault, OIDC), it's a natural fit; not done
+  yet because each self-hosted fix was cheap in isolation and the migration itself is real work
+  (new adapter, new tests, redeploy).
+- **Benchmark alternative injection-detection models.** The current classifier
+  (`protectai/deberta-v3-base-prompt-injection-v2`) was picked without comparing it to alternatives —
+  worth a proper bake-off on a labeled set before trusting it long-term, same rigor as the guardrail
+  work above.
 
 ---
 
@@ -168,7 +277,7 @@ flowchart LR
 
     subgraph Adapters
         api["API adapter (FastAPI, auth, wiring)"]
-        guard["Guardrail adapter (Presidio + classifier)"]
+        guard["Guardrail adapter (Presidio + GLiNER + classifier)"]
         llm["LLM adapter (OpenAI-compatible)"]
     end
 
@@ -180,9 +289,18 @@ flowchart LR
     api --> service
     service -->|Guardrail port| guard
     service -->|LLMClient port| llm
-    guard --> presidio["Presidio / HF models"]
-    llm --> ollama["Ollama / OpenAI endpoint"]
+    guard --> presidio["Presidio (structured PII)"]
+    guard --> gliner["GLiNER (GDPR Article 9, zero-shot)"]
+    llm --> gateway["Portkey gateway"]
+    gateway --> model["Ollama (local) / Gemini via OpenRouter (prod)"]
+
+    de["Braintrust experiment<br/>(faithfulness, relevancy,<br/>bias, job-relevance)"] -.-> gateway
+    contract -.-> de
 ```
+
+Solid arrows are the live request path; dotted arrows are evaluation-only (the Braintrust experiment
+runs offline against fixtures, never in the request path itself, but shares the same Portkey judge
+model).
 
 **Pros**
 

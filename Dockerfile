@@ -17,6 +17,9 @@ COPY app ./app
 RUN useradd -m screening-user
 USER screening-user
 
+RUN python -c "from app.adapters.guard_classifier import ClassifierGuardrail; ClassifierGuardrail()"
 EXPOSE 8000
+
+ENV HF_HUB_OFFLINE=1
 
 CMD ["fastapi", "run"]
