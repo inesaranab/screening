@@ -61,7 +61,7 @@ The **injection** (*manipulation* — text that tries to hijack the model's inst
 ## Run the evals
 
 ```bash
-uv run pytest -m "not live and not prod"   # deterministic — no model, no network. Run these in CI.
+uv run pytest -m "not live and not prod and not quality"   # deterministic — no model, no network. Run these in CI.
 uv run pytest -m live                      # hits the real Presidio + GLiNER + injection classifier (+ a live LLM)
 uv run pytest -m prod --run-prod           # hits the deployed prod endpoint (needs az login; opt-in on purpose)
 
