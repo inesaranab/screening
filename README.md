@@ -68,11 +68,12 @@ uv run pytest -m prod --run-prod           # hits the deployed prod endpoint (ne
 uv run deepeval test run evals/test_quality.py   # output-quality evals (costs tokens — a live LLM plus a judge LLM)
 ```
 
-> The quality suite **must** be launched via `deepeval test run`, not plain `pytest -m quality`.
-> It scores the live `@observe` trace produced by the LLM adapter, and only deepeval's own runner
-> keeps that trace open for the duration of the test body — under bare `pytest` every case fails
-> with `DeepEvalError: No active trace found for this test`. CI deselects the marker (`not quality`)
-> for the same reason.
+> The quality suite is meant to be launched via `deepeval test run`, not plain `pytest -m quality`:
+> `deepeval test run` is a thin wrapper around pytest that adds per-metric reporting and (with
+> `CONFIDENT_API_KEY` set) uploads results to Confident AI, neither of which plain `pytest` gives you.
+> `evals/test_quality.py` calls `assert_test` directly with no tracing involved, so `pytest -m quality`
+> also works — you just lose that reporting. CI deselects the marker (`not quality`) because it hits a
+> live LLM plus a judge LLM and costs tokens on every run.
 
 - **Deterministic** tests use fakes behind the ports (canned + deliberately malformed LLM output),
   so they're fast and reproducible. Run in CI.
@@ -171,7 +172,7 @@ all is asserted by the live and prod tests instead.
 | **Secrets** | pydantic-settings from env/`.env`; no key default — the app **refuses to start** without one, so a real key can never be silently missing. |
 | **Error handling & logging** | Timeout→504, connection→503, bad model output→502; catch-all fails closed. Structured **JSON logs, metadata only** (see [Blind spots](#guardrail-blind-spots-what-it-does-not-catch)). |
 | **Cost awareness** | Per-call token usage logged (`llm_usage`); see [Cost awareness](#cost-awareness). |
-| **Model routing** | Local dev talks straight to Ollama. Production: app → **Portkey** (gateway — sits in front of the app's LLM calls; observability/logging/retries, one stable endpoint) → **OpenRouter** (provider aggregator — holds API access to many vendors under one key) → Gemini (the model actually generating the response). Swapping providers/models is an env var, not a code change. Same gateway is reused as the DeepEval judge endpoint, and `@observe` on `assess()` traces the live call path when `CONFIDENT_API_KEY` is set (absent, tracing is disabled outright so nothing is emitted and the app is unchanged). |
+| **Model routing** | Local dev talks straight to Ollama. Production: app → **Portkey** (gateway — sits in front of the app's LLM calls; observability/logging/retries, one stable endpoint) → **OpenRouter** (provider aggregator — holds API access to many vendors under one key) → Gemini (the model actually generating the response). Swapping providers/models is an env var, not a code change. Same gateway is reused as the DeepEval judge endpoint (`evals/judge.py`); the LLM adapter itself carries no eval instrumentation — quality is measured offline by replaying persisted assessments through `evals/`, not by tracing live traffic. |
 
 ---
 
