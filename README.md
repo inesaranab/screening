@@ -111,7 +111,7 @@ compares it against something different:
 | **Faithfulness** | Did it invent something? | `transcript` **+** `job_description` — a claim must not contradict either (see below for why both) |
 | **Relevancy** | Is every sentence on topic for the role? | `job_description` — this is what defines what "relevant" even means |
 | **Bias** | Any unfair opinion in the text? | Nothing external — four fixed categories: gender, political, racial/ethnic, geographical |
-| **JobRelevantScoring** (custom classifier) | Did scoring stay off protected characteristics? | `job_description` + our own criteria — covers the categories the `Bias` scorer *doesn't*: disability, age, visa status, religion, union membership |
+| **JobRelevantScoring** (custom classifier) | Did scoring stay off protected characteristics? | `job_description` + our own criteria — disability, age, ethnicity, religion, visa status, trade union membership, health. `ethnicity` deliberately overlaps `Bias`: that scorer asks whether the *tone* is prejudiced, this one whether the characteristic was used to *justify the score* — a neutrally-worded rationale can still fail here |
 
 **Why Faithfulness checks against both transcript and job description, not transcript alone:**
 some claims are compound — *"the candidate's six years of Python experience meets the job's
@@ -134,9 +134,11 @@ Python, Go, AWS, Postgres, reliability):
 
 **Why the `Bias` scorer alone isn't enough for a hiring tool:** its four categories don't
 cover the protected characteristics this app's own transcripts actually contain (disability,
-age, visa status, union membership — the same categories GLiNER exists to redact). The custom
-`JobRelevantScoring` classifier exists specifically to close that gap, encoding this app's own
-system-prompt rule ("judge only on job-relevant evidence") as a scorable criterion.
+age, visa status, union membership, health — the same categories GLiNER exists to redact). The
+custom `JobRelevantScoring` classifier exists specifically to close that gap, encoding this app's
+own system-prompt rule ("judge only on job-relevant evidence") as a scorable criterion. Its
+`ethnicity` category overlaps `Bias` on purpose — the two ask different questions of the same
+word (prejudiced *tone* vs. used to *justify the score*).
 
 **How `JobRelevantScoring` is built:** a DeepEval `DAGMetric` — a two-question decision tree rather
 than a single prompt. The root asks *does the text reference a protected characteristic at all*; only
@@ -157,7 +159,9 @@ turning `JobRelevantScoring` into a pessimistic number that's easy to misread.
 The adversarial fixture is excluded from the quality run, and by its declared expectation
 (`expect.injection_detected`) rather than by id: the guardrail withholds an injected transcript and
 the model is never called, so there is no assessment text to judge. That the withholding happens at
-all is asserted by the live and prod tests instead.
+all is asserted by the live and prod tests instead. The quality test also asserts the *runtime*
+scrub came back clean — the fixture list is filtered on a declared expectation, so without that
+check a guardrail regression would have the judge silently scoring withheld-result boilerplate.
 
 ---
 
@@ -172,7 +176,7 @@ all is asserted by the live and prod tests instead.
 | **Secrets** | pydantic-settings from env/`.env`; no key default — the app **refuses to start** without one, so a real key can never be silently missing. |
 | **Error handling & logging** | Timeout→504, connection→503, bad model output→502; catch-all fails closed. Structured **JSON logs, metadata only** (see [Blind spots](#guardrail-blind-spots-what-it-does-not-catch)). |
 | **Cost awareness** | Per-call token usage logged (`llm_usage`); see [Cost awareness](#cost-awareness). |
-| **Model routing** | Local dev talks straight to Ollama. Production: app → **Portkey** (gateway — sits in front of the app's LLM calls; observability/logging/retries, one stable endpoint) → **OpenRouter** (provider aggregator — holds API access to many vendors under one key) → Gemini (the model actually generating the response). Swapping providers/models is an env var, not a code change. Same gateway is reused as the DeepEval judge endpoint (`evals/judge.py`); the LLM adapter itself carries no eval instrumentation — quality is measured offline by replaying persisted assessments through `evals/`, not by tracing live traffic. |
+| **Model routing** | Local dev talks straight to Ollama. Production: app → **Portkey** (gateway — sits in front of the app's LLM calls; observability/logging/retries, one stable endpoint) → **OpenRouter** (provider aggregator — holds API access to many vendors under one key) → Gemini (the model actually generating the response). Swapping providers/models is an env var, not a code change. Same gateway is reused as the DeepEval judge endpoint (`evals/judge.py`); the LLM adapter itself carries no eval instrumentation — the quality tier calls `ScreenService` itself against fixtures and judges the fresh assessment, so no candidate data leaves the service on a live request. |
 
 ---
 
@@ -297,9 +301,10 @@ flowchart LR
     contract -.-> de
 ```
 
-Solid arrows are the live request path; dotted arrows are evaluation-only (the DeepEval quality tier
-runs offline against fixtures, never in the request path itself, but shares the same Portkey judge
-model).
+Solid arrows are the live request path; dotted arrows are evaluation-only — meaning *outside the
+production request path*, not model-free or network-free. The quality tier runs against fixtures on
+demand and does call a live model twice per case (the app's own LLM, then the judge), through the
+same gateway.
 
 **Pros**
 

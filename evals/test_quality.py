@@ -16,6 +16,11 @@ _FIXTURES = json.loads((pathlib.Path(__file__).parent / "fixtures.json").read_te
 _JOB_DESCRIPTIONS = _FIXTURES["job_descriptions"]
 _CASES = [c for c in _FIXTURES["cases"] if not c["expect"]["injection_detected"]]
 
+# T-4 currently fails Faithfulness: the guardrail (Presidio/GLiNER) mangles the
+# transcript before the model sees it, so the model hallucinates on already-bad
+# input -- not a real model quality regression. Expected to resolve once GLiNER
+# is replaced, not fixed by tuning GLiNER further.
+
 
 @pytest.mark.quality
 @pytest.mark.parametrize("case", _CASES, ids=[c["id"] for c in _CASES])
