@@ -19,7 +19,12 @@ _CASES = [c for c in _FIXTURES["cases"] if not c["expect"]["injection_detected"]
 # T-4 currently fails Faithfulness: the guardrail (Presidio/GLiNER) mangles the
 # transcript before the model sees it, so the model hallucinates on already-bad
 # input -- not a real model quality regression. Expected to resolve once GLiNER
-# is replaced, not fixed by tuning GLiNER further.
+# is replaced (Gemma-4-31B-it), not fixed by tuning GLiNER further.
+#
+# Deliberately not xfail-marked: GLiNER is being replaced, not tuned, so
+# tracking this as a long-lived expected-failure would go stale the moment
+# the swap lands. Leaving it as a plain, visible failure until then is
+# intentional -- do not re-add an xfail marker here.
 
 
 @pytest.mark.quality
@@ -28,6 +33,14 @@ def test_assessment_meets_quality_bar(case, guardrail):
     async def _get_result():
         job_description = _JOB_DESCRIPTIONS[case["jd"]]
         scrub = await guardrail.scrub(case["transcript"])
+        # _CASES is filtered on the fixture's *declared* expectation, not the
+        # runtime scrub -- if the guardrail regresses and flags this transcript
+        # for real, `scrub.clean_text` becomes withheld-result boilerplate and
+        # the judge would silently score that instead of a real assessment.
+        assert not scrub.injection_detected, (
+            f"{case['id']}: guardrail flagged injection at runtime even though "
+            "the fixture declares expect.injection_detected=false"
+        )
         llm = OpenAICompatibleLLM()
         service = ScreenService(guardrail=FakeGuardrail(scrub), llm=llm)
         try:
