@@ -294,8 +294,9 @@ flowchart LR
     service -->|LLMClient port| llm
     guard --> presidio["Presidio (structured PII)"]
     guard --> gliner["GLiNER (GDPR Article 9, zero-shot)"]
-    llm --> gateway["Portkey gateway"]
-    gateway --> model["Ollama (local) / Gemini via OpenRouter (prod)"]
+    llm -->|"settings.llm_base_url (no portkey_api_key)"| ollama["Ollama (local dev)"]
+    llm -->|"settings.portkey_api_key set"| gateway["Portkey gateway"]
+    gateway --> model["Gemini via OpenRouter (prod)"]
 
     de["DeepEval quality evals<br/>(faithfulness, relevancy,<br/>bias, PII, job-relevance)"] -.-> gateway
     contract -.-> de

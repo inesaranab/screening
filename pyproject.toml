@@ -34,9 +34,10 @@ dev = [
 # Only `evals/` imports deepeval -- the LLM adapter carries no eval
 # instrumentation. A separate named group (rather than listing it flatly
 # under `dev`) keeps `uv sync --no-dev` (what the Dockerfile runs) from
-# pulling deepeval into the production image, and lets `uv sync --only-group
-# evals` install just this group -- eval scripts without dev tooling
-# (pytest, ty, tdd-guard-pytest) -- instead of always installing both together.
+# pulling deepeval into the production image. Note: this does NOT make
+# `evals/` runnable standalone via `--only-group evals` -- every eval script
+# here is a pytest test module, so `pytest` (in `dev`) is still required
+# regardless of which group installed `deepeval`.
 evals = [
     "deepeval>=4.1.5",
 ]

@@ -10,15 +10,25 @@ from app.domain.models import Assessment, ScrubResult
 
 # Set before any test module imports transformers/presidio, so a run whose
 # weights are already cached skips the Hub freshness check and loads straight
-# from disk. Guarded on the cache actually existing: forcing offline mode
-# unconditionally makes the very first run on a clean machine fail with
-# `OfflineModeIsEnabled` instead of downloading Presidio/spaCy/GLiNER/the
-# injection classifier.
+# from disk. Guarded on the *specific* models the guardrail needs actually
+# being cached -- not just "the cache dir has something in it" -- so a
+# partial/unrelated cache doesn't force offline mode and fail with
+# `OfflineModeIsEnabled` on a model that was never downloaded.
 _HF_HUB_CACHE = (
     pathlib.Path(os.environ.get("HF_HOME", pathlib.Path.home() / ".cache/huggingface"))
     / "hub"
 )
-if _HF_HUB_CACHE.is_dir() and any(_HF_HUB_CACHE.iterdir()):
+_REQUIRED_MODELS = [
+    "protectai/deberta-v3-base-prompt-injection-v2",
+    "urchade/gliner_multi_pii-v1",
+]
+
+
+def _model_cache_dir(model_name: str) -> pathlib.Path:
+    return _HF_HUB_CACHE / f"models--{model_name.replace('/', '--')}"
+
+
+if all(_model_cache_dir(m).is_dir() for m in _REQUIRED_MODELS):
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
