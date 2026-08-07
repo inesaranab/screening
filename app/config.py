@@ -16,6 +16,8 @@ class Settings(BaseSettings):
         llm_base_url: Base URL of the OpenAI-compatible model endpoint.
         llm_api_key: API key for that endpoint (ignored by Ollama).
         llm_model: Model name to request.
+        llm_guardrail_base_url: Base URL for the self-hosted LLM used by the guardrail
+        llm_guardrail_model: Model name to request at that endpoint.
         llm_timeout_s: Per-request timeout, in seconds.
         service_api_key: Shared key clients must send to call this service.
     """
@@ -26,6 +28,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = "ollama"
     llm_model: str = "qwen2.5:3b"
+    llm_guardrail_base_url: str = "http://localhost:8001/v1"
+    llm_guardrail_model: str = "google/gemma-4-31B-it"
     llm_timeout_s: float = 60.0
 
     # No default and non-empty on purpose: the app refuses to start without a
