@@ -1,4 +1,3 @@
-# evals/conftest.py
 import os
 import pathlib
 import shutil
