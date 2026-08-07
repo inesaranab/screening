@@ -80,10 +80,10 @@ uv run deepeval test run evals/test_quality.py   # output-quality evals (costs t
 - **Live** tests exercise the real guardrail over genuine transcripts in
   `evals/fixtures.json` (`T-1`…`T-4`), including an **adversarial** (an embedded
   prompt injection).
-- **Prod** tests (`evals/test_prod.py`) hit the actual deployed Container App, parametrized over
+- **Prod** tests (`tests/integration/test_prod.py`) hit the actual deployed Container App, parametrized over
   every fixture, asserting both the safety flags (`injection_detected`, `pii_redacted`) and exact
   strings that must never leak into the response. Gated behind `--run-prod` so it can never fire by
-  accident — the same discipline `evals/conftest.py` applies via `pytest_addoption`.
+  accident — the same discipline `conftest.py` applies via `pytest_addoption`.
 - **Quality** tests (`evals/test_quality.py`, marker `quality`) judge `rationale`/`evidence` with
   DeepEval metrics, through the same Portkey gateway the app itself uses. Different question from
   the safety tests above (*is the score honest*, not *did PII leak*). Kept out of CI because it

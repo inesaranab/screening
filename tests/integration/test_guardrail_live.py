@@ -1,12 +1,11 @@
-# evals/test_guardrail_live.py
+# tests/integration/test_guardrail_live.py
 import json
-import pathlib
 
 import pytest
 
-CASES = json.loads((pathlib.Path(__file__).parent / "fixtures.json").read_text())[
-    "cases"
-]
+from conftest import _FIXTURES_PATH
+
+CASES = json.loads(_FIXTURES_PATH.read_text())["cases"]
 
 
 @pytest.mark.live

@@ -1,12 +1,13 @@
 import json
-import pathlib
 
 import httpx
 import pytest
 
+from conftest import _FIXTURES_PATH
+
 URL = "https://screening-app.grayhill-6c021b7d.westeurope.azurecontainerapps.io/screen"
 
-_FIXTURES = json.loads((pathlib.Path(__file__).parent / "fixtures.json").read_text())
+_FIXTURES = json.loads(_FIXTURES_PATH.read_text())
 CASES = _FIXTURES["cases"]
 JOB_DESCRIPTIONS = _FIXTURES["job_descriptions"]
 
