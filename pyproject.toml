@@ -9,6 +9,7 @@ dependencies = [
     "fastapi[standard]>=0.139.2",
     "gliner>=0.2.24",
     "instructor>=1.15.4",
+    "nemoguardrails>=0.23.0",
     "openai>=2.47.0",
     "pip>=26.1.2",
     "presidio-analyzer>=2.2.364",

@@ -1,0 +1,13 @@
+import core
+
+# Echo the user message straight back. By the time this runs, input rails have
+# already replaced it with the redacted text, so the echo is how the adapter
+# retrieves the scrubbed transcript.
+flow main
+    activate message handler
+
+flow message handler
+    when user said something
+        global $user_message
+        bot say "{$user_message}"
+        activate message handler

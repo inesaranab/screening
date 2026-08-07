@@ -1,0 +1,11 @@
+import guardrails
+
+# One rail, one detection pass. ScrubAction returns the redacted transcript,
+# or the withheld-marker when injection fired -- splitting injection into a
+# separate rail would run the whole detection stack twice per request.
+#
+# ScrubAction is registered at runtime by NemoGuardrail so it can close over
+# the existing ClassifierGuardrail instance.
+flow input rails $input_text
+    global $user_message
+    $user_message = await ScrubAction(text=$user_message)
