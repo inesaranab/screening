@@ -1,8 +1,8 @@
 import pytest
-from conftest import FakeGuardrail, FakeLLM
 
 from app.domain.models import Assessment, NextStep, ScrubResult
 from app.domain.service import ScreenRequest, ScreenService
+from conftest import FakeGuardrail, FakeLLM
 
 _REQ = ScreenRequest(transcript="x", job_description="Backend")
 

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import pathlib
 
 import pytest
 from deepeval import assert_test
@@ -9,10 +8,10 @@ from deepeval.test_case import LLMTestCase
 from app.adapters.llm_openai import OpenAICompatibleLLM
 from app.domain.models import ScreenRequest
 from app.domain.service import ScreenService
-from evals.conftest import FakeGuardrail
+from conftest import _FIXTURES_PATH, FakeGuardrail
 from evals.metrics import ALL_METRICS
 
-_FIXTURES = json.loads((pathlib.Path(__file__).parent / "fixtures.json").read_text())
+_FIXTURES = json.loads(_FIXTURES_PATH.read_text())
 _JOB_DESCRIPTIONS = _FIXTURES["job_descriptions"]
 _CASES = [c for c in _FIXTURES["cases"] if not c["expect"]["injection_detected"]]
 

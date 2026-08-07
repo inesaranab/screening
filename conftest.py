@@ -1,4 +1,3 @@
-# evals/conftest.py
 import os
 import pathlib
 import shutil
@@ -7,6 +6,8 @@ import subprocess
 import pytest
 
 from app.domain.models import Assessment, ScrubResult
+
+_FIXTURES_PATH = pathlib.Path(__file__).parent / "evals" / "fixtures.json"
 
 # Set before any test module imports transformers/presidio, so a run whose
 # weights are already cached skips the Hub freshness check and loads straight
