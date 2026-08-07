@@ -29,11 +29,26 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "tdd-guard-pytest>=0.1.2",
     "ty>=0.0.63",
+    {include-group = "evals"},
+]
+# Only `evals/` imports deepeval -- the LLM adapter carries no eval
+# instrumentation. A separate named group (rather than listing it flatly
+# under `dev`) keeps `uv sync --no-dev` (what the Dockerfile runs) from
+# pulling deepeval into the production image. Note: this does NOT make
+# `evals/` runnable standalone via `--only-group evals` -- every eval script
+# here is a pytest test module, so `pytest` (in `dev`) is still required
+# regardless of which group installed `deepeval`.
+evals = [
+    "deepeval>=4.1.5",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-markers = ["live: hits real models / network (slow)", "prod: hits the deployed prod endpoint"]
+markers = [
+    "live: hits real models / network (slow)",
+    "prod: hits the deployed prod endpoint",
+    "quality: hits a live LLM plus a judge LLM for output-quality evals (costs tokens)"
+]
 tdd_guard_project_root = "."
 
 [tool.fastapi]

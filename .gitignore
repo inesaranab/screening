@@ -9,12 +9,17 @@ wheels/
 # Virtual environments
 .venv
 
-# Secrets — never commit the real env file (the .example is the template)
+# Secrets — never commit a real env file (the .example is the template).
+# Deliberately a wildcard: .env.prod / .env.azure / .env.local are just as
+# secret as .env, and an explicit per-file list silently stops covering the
+# next one someone creates.
 .env*
-.env
-
+!.env.example
 
 # Editor / assistant local dirs — but keep the authored agent skills (they show
 # how the AI was guided; see .claude/skills/README.md)
 .claude/*
 !.claude/skills/
+.agents/*
+
+.deepeval/

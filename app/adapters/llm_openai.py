@@ -14,6 +14,13 @@ from app.domain.models import Assessment
 
 logger = logging.getLogger("screen")
 
+# Deliberately no eval instrumentation in this module. Tracing `assess()` would
+# mean a third party (Confident AI) receiving every candidate transcript the
+# moment a key is present, and a judge call billed on 100% of live traffic, to
+# produce a score that can never be reproduced against a changed prompt. Quality
+# is measured offline instead, by replaying persisted assessments through
+# `evals/` — same metrics, same Portkey judge, on a sample we control.
+
 _SYSTEM = """You are a recruitment screening assistant. You produce decision-support \
 for a HUMAN recruiter who reviews everything you output — you never make a final \
 accept/reject decision yourself.
@@ -66,6 +73,7 @@ class OpenAICompatibleLLM:
             timeout=settings.llm_timeout_s,
             default_headers=default_headers,
         )
+
         self._client = instructor.from_openai(client, mode=instructor.Mode.TOOLS)
         self._model = settings.llm_model
 

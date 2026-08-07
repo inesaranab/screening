@@ -36,4 +36,4 @@ class Settings(BaseSettings):
     portkey_virtual_key: str = ""
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]
