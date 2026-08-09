@@ -1,0 +1,101 @@
+## Container App spec for the self-hosted Article 9 detector.
+##
+## vLLM serving Gemma-4-31B-it on one A100, consumed by LLMGuardrailRecognizer.
+## A template: the placeholders below are substituted before it is applied. It
+## is not valid input to `az containerapp create --yaml` until that has run.
+##
+## `external: false` below is the important line. This container is sent the
+## transcript BEFORE anything is redacted, so it sees real names, real health
+## details, everything. Setting it to false means the app gets no public web
+## address at all -- it simply does not exist from the internet, and only apps
+## inside this same environment can call it. That is also why screening-app has
+## to be moved into this environment: nothing outside it can reach this.
+location: ${REGION}
+type: Microsoft.App/containerApps
+## The identity used to pull the image from our private registry. It has to be
+## a user-assigned one -- see the long note in deploy.sh step 6.
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    ${UAMI_ID}: {}
+properties:
+  environmentId: ${ENV_ID}
+  workloadProfileName: gpu-a100
+  configuration:
+    activeRevisionsMode: Single # Container Apps versions every change as a "revision"; Single means only the newest one runs.
+    ingress:
+      external: false
+      targetPort: 8000
+      transport: http
+      allowInsecure: false
+    registries:
+      - server: ${ACR_LOGIN_SERVER}
+        identity: ${UAMI_ID}
+  template:
+    containers:
+      - name: vllm
+        image: ${ACR_LOGIN_SERVER}/vllm-openai:${VLLM_TAG}
+        command: ["vllm", "serve"]
+        args:
+          ## Weights come off the mounted share, never from Hugging Face at
+          ## runtime -- a cold start must not depend on an external download.
+          - "/models/${MODEL_DIR}"
+          ## The name clients must send. Kept identical to settings.llm_guardrail_model
+          ## so the app's config does not have to know the on-disk path.
+          - "--served-model-name"
+          - "${SERVED_MODEL_NAME}"
+          - "--port"
+          - "8000"
+          ## The most text the model will accept in one request, in tokens.
+          ## The GPU reserves working memory for this whether it is used or not,
+          ## so a smaller number leaves room to handle more requests at once.
+          ## Transcripts are nowhere near 8192 tokens, so this costs us nothing.
+          - "--max-model-len"
+          - "8192"
+          - "--gpu-memory-utilization"
+          - "0.90"
+        resources:
+          cpu: 24
+          memory: 220Gi
+        volumeMounts:
+          - volumeName: models
+            mountPath: /models
+        probes:
+          ## Probes are how Azure asks the container "are you alive?". If it
+          ## stops answering, Azure restarts it.
+          ##
+          ## The problem: loading 62GB of weights takes minutes, and during that
+          ## time the container cannot answer anything. Without a Startup probe,
+          ## Azure would read that silence as a crash and restart it -- forever.
+          ##
+          ## A Startup probe says "don't judge me yet". Azure keeps asking every
+          ## 15 seconds, up to 60 times (15 minutes), and only once it answers
+          ## does the Liveness probe start applying. 15 minutes is generous
+          ## against a cold start of a few minutes; that slack is deliberate.
+          ##
+          ## Both are written out here because nothing adds them for us: Azure's
+          ## defaults are only filled in by the portal, and the docs exclude GPU
+          ## profiles from even that.
+          - type: Startup
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 60
+          - type: Liveness
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+    volumes:
+      - name: models
+        storageType: AzureFile
+        storageName: models
+    scale:
+      ## minReplicas: 0 means that when nobody is screening, no container runs
+      ## and the A100 costs nothing. That is the whole reason this is affordable.
+      ## The price is that the next request after an idle period has to wait for
+      ## the container to start and load 62GB again -- a few minutes.
+      minReplicas: 0
+      maxReplicas: 1

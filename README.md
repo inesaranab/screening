@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.14-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688)
-![PII](https://img.shields.io/badge/PII-Presidio%20%2B%20GLiNER-4c8b2b)
+![PII](https://img.shields.io/badge/PII-Presidio%20%2B%20Gemma--4-4c8b2b)
 ![Injection](https://img.shields.io/badge/injection-classifier-4c8b2b)
 ![Quality](https://img.shields.io/badge/quality-DeepEval-4c8b2b)
 ![Tests](https://img.shields.io/badge/tests-pytest-4c8b2b)
@@ -62,7 +62,7 @@ The **injection** (*manipulation* — text that tries to hijack the model's inst
 
 ```bash
 uv run pytest -m "not live and not prod and not quality"   # deterministic — no model, no network. Run these in CI.
-uv run pytest -m live                      # hits the real Presidio + GLiNER + injection classifier (+ a live LLM)
+uv run pytest -m live                      # hits the real Presidio + Gemma-4 + injection classifier (+ a live LLM)
 uv run pytest -m prod --run-prod           # hits the deployed prod endpoint (needs az login; opt-in on purpose)
 
 uv run deepeval test run evals/test_quality.py   # output-quality evals (costs tokens — a live LLM plus a judge LLM)
@@ -280,7 +280,7 @@ flowchart LR
 
     subgraph Adapters
         api["API adapter (FastAPI, auth, wiring)"]
-        guard["Guardrail adapter (Presidio + GLiNER + classifier)"]
+        guard["Guardrail adapter (NeMo → Presidio + Gemma-4 + classifier)"]
         llm["LLM adapter (OpenAI-compatible)"]
     end
 
@@ -293,7 +293,7 @@ flowchart LR
     service -->|Guardrail port| guard
     service -->|LLMClient port| llm
     guard --> presidio["Presidio (structured PII)"]
-    guard --> gliner["GLiNER (GDPR Article 9, zero-shot)"]
+    guard --> gemma["Gemma-4-31B via vLLM (GDPR Article 9)"]
     llm -->|"settings.llm_base_url (no portkey_api_key)"| ollama["Ollama (local dev)"]
     llm -->|"settings.portkey_api_key set"| gateway["Portkey gateway"]
     gateway --> model["Gemini via OpenRouter (prod)"]
@@ -323,3 +323,67 @@ same gateway.
   everything, so it carries the wiring weight.
 - **The call path is less obvious** — a request hops core → port → adapter, more to trace than a
   straight-line script.
+
+---
+
+# Deployment topology — why the detector is a second container
+
+The Article 9 detector is Gemma-4-31B, which needs ~62 GB of VRAM at bf16. That does not
+fit on a CPU container and does not fit on a T4 (16 GB), so it cannot live in the same
+container as the API — it needs its own A100. Splitting it out is a hardware constraint
+first, and only incidentally a design choice.
+
+What makes the split safe is *where* the second container sits. It receives the transcript
+**before** redaction, so it sees raw PII and Article 9 special-category data. It therefore
+runs on **internal ingress**: no public DNS name, no route in from the internet, reachable
+only by apps inside the same managed environment. That is also why both containers must
+share one environment, and therefore one region — an environment is single-region, so
+co-location is what buys the private hop.
+
+```
+                    ┌─────────────────────────────────────────────────────────┐
+   client           │  managed environment  (Sweden Central)                  │
+     │              │                                                         │
+     │  raw         │   ┌───────────────────────────────┐                     │
+     │  transcript  │   │  CONTAINER 1   screening-app  │                     │
+     └──── HTTPS ───┼──►│  CPU · Consumption · min=0    │                     │
+       (public      │   │                               │                     │
+        ingress)    │   │  NemoGuardrail                │                     │
+                    │   │    └► ClassifierGuardrail     │                     │
+                    │   │         ├ injection classifier│                     │
+                    │   │         └ AnalyzerEngine      │                     │
+                    │   │             .analyze(text) ───┼──── ONE PASS ────┐  │
+                    │   │             ├ regex: NINO     │                  │  │
+                    │   │             ├ regex: POSTCODE │                  │  │
+                    │   │             ├ spaCy NER       │                  │  │
+                    │   │             └ LLMGuardrail    │                  │  │
+                    │   │                Recognizer ────┼──┐               │  │
+                    │   │                               │  │ raw text      │  │
+                    │   │  ◄── spans merged ────────────┼──┘ over INTERNAL │  │
+                    │   │      anonymize → <RELIGION>   │    ingress only  │  │
+                    │   │                               │  ▼               │  │
+                    │   └───────────────┬───────────────┘  │               │  │
+                    │                   │        ┌─────────┴────────────┐  │  │
+                    │                   │        │ CONTAINER 2          │  │  │
+                    │                   │        │ screening-gemma      │◄─┘  │
+                    │                   │        │ A100 80GB · min=0    │     │
+                    │                   │        │ vLLM + Gemma-4-31B   │     │
+                    │                   │        │ NO public address    │     │
+                    │                   │        └──────────────────────┘     │
+                    └───────────────────┼─────────────────────────────────────┘
+                                        │  redacted transcript only
+                                        ▼
+                                   Portkey ──► Gemini   (assessment)
+```
+
+The detail worth noticing is that Presidio and Gemma are **not** two sequential stages.
+`AnalyzerEngine.analyze()` runs every registered recognizer over the same text in a single
+call, and `LLMGuardrailRecognizer` is simply one of them that happens to make an HTTP hop.
+All spans — regex, spaCy, and LLM — are merged before a single anonymization step. Adding
+the LLM detector was a registry call, not a pipeline rewrite.
+
+Both containers scale to zero. Serverless GPU bills only while a replica is running and
+idle charges do not apply, so the cost of the A100 when nobody is screening is nothing; the
+trade is a multi-minute cold start while ~62 GB of weights load from the mounted share.
+
+Infrastructure for container 2 lives in `infra/gemma/`.
