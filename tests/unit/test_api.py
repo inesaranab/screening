@@ -1,32 +1,30 @@
+"""The auth gate on /screen.
+
+The request/response contract itself is covered in test_api_async.py; this file
+is only about who is allowed through the door.
+"""
+
 import httpx
 import pytest
-from openai import APITimeoutError
 
-from app.api.main import app, get_service, require_api_key
+from app.api.main import app, get_service
 from app.config import settings
-from app.domain.models import Assessment, Flags, NextStep, ScreenRequest, ScreenResult
+from app.domain.models import Job, ScreenRequest
+
+_BODY = {"transcript": "5y Python", "job_description": "Backend"}
 
 
 class FakeService:
-    def __init__(
-        self, result: ScreenResult | None = None, error: Exception | None = None
-    ):
-        self._result = result
-        self._error = error
+    """Accepts work and does nothing with it -- enough to exercise auth."""
 
-    async def screen(self, request: ScreenRequest) -> ScreenResult:
-        if self._error:
-            raise self._error
-        assert self._result is not None
-        return self._result
+    async def start(self, request: ScreenRequest) -> str:
+        return "job-1"
 
+    async def run(self, job_id: str, request: ScreenRequest) -> None:
+        return None
 
-_OK = ScreenResult(
-    assessment=Assessment(
-        fit_score=4, rationale="ok", evidence=["x"], next_step=NextStep.ADVANCE
-    ),
-    flags=Flags(),
-)
+    async def result(self, job_id: str) -> Job | None:
+        return Job(id=job_id)
 
 
 async def _post(json, headers=None):
@@ -35,37 +33,27 @@ async def _post(json, headers=None):
         return await client.post("/screen", json=json, headers=headers or {})
 
 
-_BODY = {"transcript": "5y Python", "job_description": "Backend"}
-
-
 @pytest.fixture(autouse=True)
 def _clear():
     yield
     app.dependency_overrides.clear()
 
 
-# 1. auth gate works
 @pytest.mark.asyncio
 async def test_bad_key_is_401():
-    app.dependency_overrides[get_service] = lambda: FakeService(result=_OK)
+    app.dependency_overrides[get_service] = lambda: FakeService()
     r = await _post(_BODY)
     assert r.status_code == 401
 
 
-# 2. happy path reaches the service (auth + wiring)
 @pytest.mark.asyncio
-async def test_valid_key_returns_200():
-    app.dependency_overrides[get_service] = lambda: FakeService(result=_OK)
+async def test_valid_key_is_accepted():
+    """202, not 200 -- the work is accepted, not finished. See test_api_async."""
+    app.dependency_overrides[get_service] = lambda: FakeService()
     r = await _post(_BODY, headers={"x-api-key": settings.service_api_key})
-    assert r.status_code == 200
+    assert r.status_code == 202
 
 
-# 3. error mapping
-@pytest.mark.asyncio
-async def test_timeout_maps_to_504():
-    app.dependency_overrides[get_service] = lambda: FakeService(
-        error=APITimeoutError(request=httpx.Request("POST", "http://tests_server"))
-    )
-    app.dependency_overrides[require_api_key] = lambda: None
-    r = await _post(_BODY)
-    assert r.status_code == 504
+# Removed: test_timeout_maps_to_504. The endpoint no longer calls the model, so
+# it cannot map model errors -- a timeout now lands on the job as
+# `status: failed`, covered by test_a_failed_job_is_200_and_says_so.

@@ -5,6 +5,7 @@ import pytest
 from deepeval import assert_test
 from deepeval.test_case import LLMTestCase
 
+from app.adapters.job_store_memory import InMemoryJobStore
 from app.adapters.llm_openai import OpenAICompatibleLLM
 from app.domain.models import ScreenRequest
 from app.domain.service import ScreenService
@@ -41,7 +42,11 @@ def test_assessment_meets_quality_bar(case, guardrail):
             "the fixture declares expect.injection_detected=false"
         )
         llm = OpenAICompatibleLLM()
-        service = ScreenService(guardrail=FakeGuardrail(scrub), llm=llm)
+        # screen() itself never touches the store; the constructor needs one
+        # because the service also exposes start/run/result.
+        service = ScreenService(
+            guardrail=FakeGuardrail(scrub), llm=llm, job_store=InMemoryJobStore()
+        )
         try:
             result = await service.screen(
                 ScreenRequest(

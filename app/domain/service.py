@@ -1,35 +1,110 @@
-"""The service layer — the vendor-free core that owns the order of operations.
+"""The service layer: the vendor-free core that owns the order of operations.
 
-    scrub  →  [gate: fail closed on injection]  →  assess (model)  →  assemble
+Screening runs in a fixed sequence::
 
-Scrubbing runs before anything else, so the model never sees raw candidate data.
-If the guardrail flags injection we fail closed: the model is never called and a
-withheld result is returned, so a tampered transcript can't produce a real score.
+    scrub -> [gate: fail closed on injection] -> assess (model) -> assemble
+
+Scrubbing precedes every other step, so the model never receives raw candidate
+data. When the guardrail reports injection, the model is not called and a
+withheld result is returned in place of a score.
+
+The work is split across three entry points so that accepting a screening and
+producing its result are separate operations:
+
+    - ``start`` records the job and returns its id.
+    - ``run`` performs the screening and stores the outcome.
+    - ``result`` reads the outcome back.
+
+``run`` is called by whichever process performs the work; the service does not
+depend on which.
+
+Collaborators are declared as ports (``Guardrail``, ``LLMClient``,
+``JobStore``), so this module depends on no vendor or transport.
 """
+
+import logging
+import uuid
 
 from app.domain.models import (
     Assessment,
     Flags,
+    Job,
     NextStep,
     ScreenRequest,
     ScreenResult,
 )
 from app.ports.guardrail import Guardrail
+from app.ports.job_store import JobStore
 from app.ports.llm import LLMClient
+
+logger = logging.getLogger("screen")
 
 
 class ScreenService:
     """Orchestrates one screening request across the guardrail and LLM ports."""
 
-    def __init__(self, guardrail: Guardrail, llm: LLMClient) -> None:
-        """Store the collaborators, typed as ports (never concrete adapters).
+    def __init__(
+        self, guardrail: Guardrail, llm: LLMClient, job_store: JobStore
+    ) -> None:
+        """Initialise the service with its collaborators.
 
         Args:
-            guardrail: Something that can scrub a transcript.
-            llm: Something that can assess a scrubbed transcript.
+            guardrail: Redacts a transcript and reports what it found.
+            llm: Produces an Assessment from a scrubbed transcript.
+            job_store: Persists a job between acceptance and completion.
         """
         self._guardrail = guardrail
         self._llm = llm
+        self._jobs = job_store
+
+    async def start(self, request: ScreenRequest) -> str:
+        """Record a screening as pending and return its id.
+
+        Performs no screening. The transcript is not read, the guardrail and
+        model are not called.
+
+        Args:
+            request: The transcript and job description to assess.
+
+        Returns:
+            The job id, to be passed to ``result``.
+        """
+        job_id = uuid.uuid4().hex
+        await self._jobs.create(job_id)
+        return job_id
+
+    async def run(self, job_id: str, request: ScreenRequest) -> None:
+        """Perform the screening and store its outcome against the job.
+
+        Does not raise. Any exception is recorded as a failed job, so the job
+        always leaves the PENDING state.
+
+        The stored error is the exception class name only. Exception messages
+        may quote the transcript, and the job store is not covered by the
+        guardrail. Full detail is written to the log instead.
+
+        Args:
+            job_id: The id returned by ``start``.
+            request: The transcript and job description to assess.
+        """
+        try:
+            result = await self.screen(request)
+        except Exception as exc:
+            logger.exception("screen_job_failed", extra={"context": {"job": job_id}})
+            await self._jobs.fail(job_id, type(exc).__name__)
+            return
+        await self._jobs.complete(job_id, result)
+
+    async def result(self, job_id: str) -> Job | None:
+        """Return a job's current state.
+
+        Args:
+            job_id: The id returned by ``start``.
+
+        Returns:
+            The Job, or None if no job with that id exists.
+        """
+        return await self._jobs.get(job_id)
 
     async def screen(self, request: ScreenRequest) -> ScreenResult:
         """Screen a candidate transcript against a job description.
@@ -38,9 +113,10 @@ class ScreenService:
             request: The transcript and job description to assess.
 
         Returns:
-            A ScreenResult: either the model's assessment with reviewer flags,
-            or — if injection was detected — a withheld result (no score, routed
-            for human review) with ``out_of_scope`` set.
+            A ScreenResult. On the normal path it carries the model's
+            assessment and the reviewer flags. When injection is detected it
+            carries a withheld result: no fit score, ``next_step`` set to
+            REQUEST_MORE_INFO, and ``out_of_scope`` set.
         """
         # 1. Scrub the raw transcript.
         scrub = await self._guardrail.scrub(request.transcript)
