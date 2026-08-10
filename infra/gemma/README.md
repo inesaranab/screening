@@ -264,9 +264,75 @@ Two conclusions:
   strategies sit at the share's ceiling, so the read pattern was never the limit. Not set;
   do not re-add without a measurement.
 
-13 minutes is the accepted trade for an A100 that costs nothing while idle. Making it
-invisible to callers means `/screen` should return 202 and be polled rather than blocking —
-screening is asynchronous work and nobody waits on a transcript in real time. Not built.
+13 minutes is the accepted trade for an A100 that costs nothing while idle. But it is not
+merely slow — see below, it makes the synchronous design impossible.
+
+## BLOCKER: Azure's ingress cuts every request at 240 seconds
+
+**A synchronous `/screen` against a cold detector cannot work on Consumption ingress.** Not
+"is slow" — the platform hangs up at 4 minutes and the model needs 13.
+
+Measured 2026-08-10, from inside `screening-app`, calling a cold `screening-gemma`:
+
+```
+15:44:28 UTC  request sent
+15:48:28 UTC  urllib.error.HTTPError: HTTP Error 504: Gateway Timeout
+              = 240 seconds, to the second
+```
+
+A **504** is the edge proxy giving up on the upstream, not our client timing out. Confirmed
+against the docs — [Ingress in Azure Container Apps](https://learn.microsoft.com/en-us/azure/container-apps/ingress-overview)
+lists `Request time out is 240 seconds` as a fixed property of HTTP ingress.
+
+### What was ruled out, and why
+
+**Raising `llm_guardrail_timeout_s` does not help.** That controls how long *our client* waits.
+The proxy severs the connection at 240s regardless, so the app never gets the chance to be
+patient. Both fixes were needed for different reasons and neither solves this one.
+
+**Calling by app name instead of FQDN does not help.** The docs say calls by app name go
+"directly to app B" while FQDN calls route via the edge proxy, so this looked like a free fix.
+Tested: `http://screening-gemma/v1/models` resolves, routes, and *does* trigger the cold start
+— then dies at exactly 240s with the same 504. The timeout applies either way.
+
+**Premium ingress can raise it** (idle request timeout, 4–30 min) but requires a non-Consumption
+workload profile, D4–D32, minimum two node instances, billed continuously. That removes the
+scale-to-zero economics this whole architecture exists to preserve.
+
+### What remains
+
+| Option | Cost | Keeps scale-to-zero |
+|---|---|---|
+| **202 + poll** | ~€40/mo (warm CPU app only) | ✅ |
+| Keep the GPU warm | ~€2.16/hr ≈ €1,570/mo | ❌ |
+| Premium ingress | 2× dedicated D4+ nodes, continuous | ❌ |
+
+**202 + poll is the only one that survives contact with the cost model.** Each HTTP request
+returns in milliseconds, so the 240s ceiling never applies; the 13-minute wait happens
+*between* polls rather than inside one request.
+
+It needs external job state — `screening-app` runs up to 10 replicas, so an in-memory dict
+would let a poll hit a replica that knows nothing about the job. The `screeningweights`
+storage account is already there; Table Storage is the cheap fit. The background work also has
+to outlive the request, which means either `minReplicas: 1` on the CPU app or a queue-triggered
+Container Apps Job like `download-weights`.
+
+This is also the shape that makes batch natural: submit N transcripts, pay one cold start,
+amortize it. At 50 transcripts a 13-minute boot is ~15s each; at one transcript it is absurd.
+
+**Not built.** Until it is, any demo must warm the detector first.
+
+### Reproducing it
+
+```bash
+az containerapp update -n screening-app -g screening-rg --min-replicas 1   # remember to undo
+az containerapp exec -n screening-app -g screening-rg --command /bin/sh
+```
+```sh
+date; python -c "import urllib.request,time; t=time.time(); r=urllib.request.urlopen('http://screening-gemma/v1/models',timeout=1800).read().decode(); print(round(time.time()-t),'s')"; date
+```
+
+The two `date` stamps bracket the failure. Anything at ~240s is the proxy, not the app.
 
 ## Files
 

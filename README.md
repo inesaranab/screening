@@ -280,7 +280,7 @@ flowchart LR
 
     subgraph Adapters
         api["API adapter (FastAPI, auth, wiring)"]
-        guard["Guardrail adapter (NeMo → Presidio + Gemma-4 + classifier)"]
+        guard["Guardrail adapter (Presidio + Gemma-4 + classifier)"]
         llm["LLM adapter (OpenAI-compatible)"]
     end
 
@@ -348,10 +348,9 @@ co-location is what buys the private hop.
      │  transcript  │   │  CONTAINER 1   screening-app  │                     │
      └──── HTTPS ───┼──►│  CPU · Consumption · min=0    │                     │
        (public      │   │                               │                     │
-        ingress)    │   │  NemoGuardrail                │                     │
-                    │   │    └► ClassifierGuardrail     │                     │
-                    │   │         ├ injection classifier│                     │
-                    │   │         └ AnalyzerEngine      │                     │
+                    │   │  ClassifierGuardrail          │                     │
+                    │   │    ├ injection classifier     │                     │
+                    │   │    └ AnalyzerEngine           │                     │
                     │   │             .analyze(text) ───┼──── ONE PASS ────┐  │
                     │   │             ├ regex: NINO     │                  │  │
                     │   │             ├ regex: POSTCODE │                  │  │
@@ -374,6 +373,7 @@ co-location is what buys the private hop.
                                         │  redacted transcript only
                                         ▼
                                    Portkey ──► Gemini   (assessment)
+
 ```
 
 The detail worth noticing is that Presidio and Gemma are **not** two sequential stages.

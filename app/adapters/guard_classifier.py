@@ -33,9 +33,7 @@ from app.adapters.llm_guardrail_recognizer import LLMGuardrailRecognizer
 from app.domain.models import ScrubResult
 
 # We use a specific DOB recogniser instead of the generic DATE_TIME so durations
-# ("six years") survive — only an actual date of birth is a PII risk. Phones are
-# left to Presidio's BUILT-IN multi-region recogniser (US/UK/DE/FR/IL/IN/CA/BR)
-# rather than a UK-only regex — that's the locale-general choice.
+# ("six years") survive — only an actual date of birth is a PII risk.
 _ENTITIES = [
     "PERSON",
     "EMAIL_ADDRESS",
@@ -124,10 +122,7 @@ _POSTCODE = [
 ]
 
 
-# The text that replaces a transcript flagged as injection. Exported because
-# NemoGuardrail has to recognise it coming back out of the rails -- keeping two
-# copies of the literal in sync by hand is how injection silently degrades into
-# "PII was redacted".
+# The text that replaces a transcript flagged as injection.
 WITHHELD_MESSAGE = "[flagged by injection classifier — content withheld from scoring]"
 
 _INJECTION_MODEL = "protectai/deberta-v3-base-prompt-injection-v2"

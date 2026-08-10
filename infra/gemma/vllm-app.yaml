@@ -4,12 +4,9 @@
 ## A template: the placeholders below are substituted before it is applied. It
 ## is not valid input to `az containerapp create --yaml` until that has run.
 ##
-## `external: false` below is the important line. This container is sent the
+## `external: false` (does not exist from the internet): this container is sent the
 ## transcript BEFORE anything is redacted, so it sees real names, real health
-## details, everything. Setting it to false means the app gets no public web
-## address at all -- it simply does not exist from the internet, and only apps
-## inside this same environment can call it. That is also why screening-app has
-## to be moved into this environment: nothing outside it can reach this.
+## details, everything. 
 location: ${REGION}
 type: Microsoft.App/containerApps
 ## The identity used to pull the image from our private registry. It has to be
@@ -29,6 +26,8 @@ properties:
       targetPort: 8000
       transport: http
       allowInsecure: false
+      # match cooldownPeriod
+      requestTimeout: 900
     registries:
       - server: ${ACR_LOGIN_SERVER}
         identity: ${UAMI_ID}
@@ -55,12 +54,6 @@ properties:
           - "8192"
           - "--gpu-memory-utilization"
           - "0.90"
-          ## NOT set: --safetensors-load-strategy eager. vLLM's log recommends it
-          ## for network filesystems, and Azure Files is one, so it looked like an
-          ## obvious win. Measured on 2026-08-10 it was slightly SLOWER -- first
-          ## shard 386s eager vs 343s default. Both runs sat at the share's
-          ## provisioned rate, so the read strategy was never the limit. Left out
-          ## deliberately; do not re-add without a measurement.
         resources:
           cpu: 24
           memory: 220Gi
@@ -68,21 +61,13 @@ properties:
           - volumeName: models
             mountPath: /models
         probes:
-          ## Probes are how Azure asks the container "are you alive?". If it
-          ## stops answering, Azure restarts it.
-          ##
-          ## The problem: loading 62GB of weights takes minutes, and during that
+          ## Loading 62GB of weights takes minutes, and during that
           ## time the container cannot answer anything. Without a Startup probe,
-          ## Azure would read that silence as a crash and restart it -- forever.
+          ## Azure would read that silence as a crash and restart it.
           ##
-          ## A Startup probe says "don't judge me yet". Azure keeps asking every
+          ## In our configuration Azure keeps asking every
           ## 15 seconds, up to 60 times (15 minutes), and only once it answers
-          ## does the Liveness probe start applying. 15 minutes is generous
-          ## against a cold start of a few minutes; that slack is deliberate.
-          ##
-          ## Both are written out here because nothing adds them for us: Azure's
-          ## defaults are only filled in by the portal, and the docs exclude GPU
-          ## profiles from even that.
+          ## does the Liveness probe start applying. 
           - type: Startup
             httpGet:
               path: /health
@@ -100,28 +85,11 @@ properties:
         storageType: AzureFile
         storageName: models
     scale:
-      ## minReplicas: 0 means that when nobody is screening, no container runs
-      ## and the A100 costs nothing. That is the whole reason this is affordable.
-      ## The price is that the next request after an idle period has to wait for
-      ## the container to start and load 62GB again -- a few minutes.
       minReplicas: 0
       maxReplicas: 1
-      ## 900s, not the 300s default, and this is load-bearing -- without it the
-      ## app cannot deploy at all.
-      ##
-      ## Cooldown is how long the autoscaler waits with no traffic before
+      ## Cooldown is how long the autoscaler (KEDA) waits with no traffic before
       ## removing the replica, and the clock starts when the replica is
-      ## SCHEDULED, not when the container starts. At 300s the sequence was:
-      ##   0s    replica assigned, clock starts
-      ##   112s  image pulled
-      ##   169s  container started, vLLM begins loading
-      ##   300s  KEDA scales 1 -> 0, container killed mid-load
-      ## The revision never produced a healthy replica, so every new revision
-      ## went straight to ActivationFailed and the app was undeployable.
-      ## Confirmed in ContainerAppSystemLogs_CL: "KEDAScaleTargetDeactivated ...
-      ## from 1 to 0" at exactly assignment + 300s.
-      ##
+      ## SCHEDULED, not when the container starts. 
       ## 900s covers pull + start + a ~5.5 min weight load with room to spare.
-      ## The cost: after real traffic stops, the GPU idles 15 minutes instead of
-      ## 5 before scaling to zero. Lower this only if the load gets faster.
+      ## The cost: after real traffic stops, the GPU idles 15 minutes.
       cooldownPeriod: 900

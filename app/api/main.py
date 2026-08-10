@@ -16,7 +16,6 @@ from instructor.core.exceptions import InstructorRetryException
 from openai import APIConnectionError, APITimeoutError
 
 from app.adapters.guard_classifier import ClassifierGuardrail
-from app.adapters.guard_nemo import NemoGuardrail
 from app.adapters.llm_openai import OpenAICompatibleLLM
 from app.config import settings
 from app.domain.models import ScreenRequest, ScreenResult
@@ -30,10 +29,7 @@ logger = logging.getLogger("screen")
 async def lifespan(app: FastAPI):
     # Build the expensive adapters once at startup, tear the LLM client down at exit.
     setup_logging()
-    # NeMo orchestrates; ClassifierGuardrail still does the detection. Swapping
-    # back is one line -- both satisfy the Guardrail port, which is the whole
-    # reason this stayed a composition-root change rather than a refactor.
-    guardrail = NemoGuardrail(inner=ClassifierGuardrail())
+    guardrail = ClassifierGuardrail()
     llm = OpenAICompatibleLLM()
     app.state.service = ScreenService(guardrail=guardrail, llm=llm)
     yield
