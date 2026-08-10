@@ -23,9 +23,13 @@ this is a separate container and why its ingress is internal.
 The full cycle is proven: a `minReplicas: 0` revision boots, loads 58 GiB of weights, serves
 `/v1/models` over an address with no public existence, and scales back to zero on its own.
 
-`deploy.sh` automates steps 1–8 and every step is idempotent, so re-running after a partial
-failure is the intended recovery path. `./deploy.sh` runs everything; `./deploy.sh weights`
-runs one step.
+All of it was done by hand with `az`. A `deploy.sh` that wrapped the sequence was written and
+then deleted: steps 1–5 were verified idempotent, but 6–8 were never executed by the script,
+and doing them manually proved its step 6 was wrong. It would have needed a full teardown and
+rebuild to earn the label "working", to end up with something that still has no state file,
+no drift detection and no plan step. **Terraform is the intended replacement** — see the repo
+tasks on importing `screening-rg`. The commands themselves are recorded per-step below and in
+the vault's Azure CLI reference; `git log` has the script if it is ever wanted.
 
 **There was never a quota problem.** The subscription had A100 quota in Sweden Central all
 along (`ManagedEnvironmentConsumptionNCA100Gpus 0/2`); the zeros seen in the portal were
@@ -266,13 +270,13 @@ screening is asynchronous work and nobody waits on a transcript in real time. No
 
 ## Files
 
-- `deploy.sh` — every step, idempotent. Run it whole or one step at a time.
 - `download-weights-job.yaml` — one-shot job that fills the share. Runs on the CPU profile;
   using the GPU profile would burn A100 minutes on pure I/O.
 - `vllm-app.yaml` — the `screening-gemma` app. Internal ingress, `gpu-a100`, scale to zero.
 
-The two YAML files are templates with `${...}` placeholders and are not directly appliable —
-`deploy.sh` substitutes them into a temp directory before calling `az`.
+Both are templates with `${...}` placeholders, so neither is directly appliable. Substitute
+the values, then `az containerapp [job] create --yaml <file>`. They exist because volume
+mounts and probes have no CLI flag — everything else here was done with plain `az`.
 
 ## Where every field comes from
 

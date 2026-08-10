@@ -13,7 +13,8 @@
 location: ${REGION}
 type: Microsoft.App/containerApps
 ## The identity used to pull the image from our private registry. It has to be
-## a user-assigned one -- see the long note in deploy.sh step 6.
+## a user-assigned one -- see README.md, "The image pull must use a
+## user-assigned identity", for why a system-assigned one dead-ends.
 identity:
   type: UserAssigned
   userAssignedIdentities:
