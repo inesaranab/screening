@@ -54,6 +54,12 @@ properties:
           - "8192"
           - "--gpu-memory-utilization"
           - "0.90"
+          ## NOT set: --safetensors-load-strategy eager. vLLM's log recommends it
+          ## for network filesystems, and Azure Files is one, so it looked like an
+          ## obvious win. Measured on 2026-08-10 it was slightly SLOWER -- first
+          ## shard 386s eager vs 343s default. Both runs sat at the share's
+          ## provisioned rate, so the read strategy was never the limit. Left out
+          ## deliberately; do not re-add without a measurement.
         resources:
           cpu: 24
           memory: 220Gi
@@ -99,3 +105,22 @@ properties:
       ## the container to start and load 62GB again -- a few minutes.
       minReplicas: 0
       maxReplicas: 1
+      ## 900s, not the 300s default, and this is load-bearing -- without it the
+      ## app cannot deploy at all.
+      ##
+      ## Cooldown is how long the autoscaler waits with no traffic before
+      ## removing the replica, and the clock starts when the replica is
+      ## SCHEDULED, not when the container starts. At 300s the sequence was:
+      ##   0s    replica assigned, clock starts
+      ##   112s  image pulled
+      ##   169s  container started, vLLM begins loading
+      ##   300s  KEDA scales 1 -> 0, container killed mid-load
+      ## The revision never produced a healthy replica, so every new revision
+      ## went straight to ActivationFailed and the app was undeployable.
+      ## Confirmed in ContainerAppSystemLogs_CL: "KEDAScaleTargetDeactivated ...
+      ## from 1 to 0" at exactly assignment + 300s.
+      ##
+      ## 900s covers pull + start + a ~5.5 min weight load with room to spare.
+      ## The cost: after real traffic stops, the GPU idles 15 minutes instead of
+      ## 5 before scaling to zero. Lower this only if the load gets faster.
+      cooldownPeriod: 900

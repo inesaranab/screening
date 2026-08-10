@@ -6,7 +6,7 @@ consumed by `LLMGuardrailRecognizer` in the main app.
 Read the "Deployment topology" section of the repo README first — it explains *why*
 this is a separate container and why its ingress is internal.
 
-## State as of 2026-08-09
+## State as of 2026-08-10
 
 | # | Step | Status |
 |---|---|---|
@@ -15,36 +15,22 @@ this is a separate container and why its ingress is internal.
 | 3 | Link the share to the environment | ✅ `models` (ReadOnly) + `models-rw` (ReadWrite) |
 | 4 | Download the weights onto the share | ✅ 62.58 GB in `/models/gemma-4-31b-it`, both safetensors byte-exact against HF |
 | 5 | Mirror the vLLM image into ACR | ✅ `screeningacr1.azurecr.io/vllm-openai:v0.26.0` |
-| 6 | Create `screening-gemma` on the A100 | ✅ serving; `Application startup complete`, `/health` 200 |
-| 7 | Move `screening-app` into `screening-env-swe` | ⬜ **next** |
-| 8 | Point `SCREENING_LLM_GUARDRAIL_BASE_URL` at the internal FQDN | ⬜ needs 7 |
-| 9 | Merge `gemma4-guardrails` → `main` | ⛔ needs 8 |
+| 6 | Create `screening-gemma` on the A100 | ✅ boots from cold, serves, scales itself to zero |
+| 7 | Move `screening-app` into `screening-env-swe` | ✅ recreated there; old West Europe app deleted |
+| 8 | Point `SCREENING_LLM_GUARDRAIL_BASE_URL` at the internal FQDN | ✅ private hop verified from inside the environment |
+| 9 | Merge `gemma4-guardrails` → `main` | ⬜ **next — the only step left** |
+
+The full cycle is proven: a `minReplicas: 0` revision boots, loads 58 GiB of weights, serves
+`/v1/models` over an address with no public existence, and scales back to zero on its own.
+
+`deploy.sh` automates steps 1–8 and every step is idempotent, so re-running after a partial
+failure is the intended recovery path. `./deploy.sh` runs everything; `./deploy.sh weights`
+runs one step.
 
 **There was never a quota problem.** The subscription had A100 quota in Sweden Central all
 along (`ManagedEnvironmentConsumptionNCA100Gpus 0/2`); the zeros seen in the portal were
-West Europe, which offers no A100 at any quota. Check with
-`az containerapp env list-usages -n <env> -g <rg>` before ever filing a support case again.
-
-`deploy.sh` automates all of it and every step is idempotent, so re-running after a
-partial failure is the intended recovery path. `./deploy.sh` runs everything;
-`./deploy.sh weights` runs one step.
-
-The weights download took **7m37s**, not the 30–45 minutes first estimated — Xet plus
-in-region bandwidth, rather than the share's 135 MiB/s write ceiling, is what governs.
-That also makes the cold-start figure below pessimistic; the first GPU boot will settle it.
-
-### The blocker
-
-Support request **2608090050000148**, opened 2026-08-09, amended the same day to ask for
-`Managed Environment Consumption NC24-A100 Gpus` = 1 in **Sweden Central** against
-environment `screening-env-swe`.
-
-The original request was for a T4 in West Europe and was wrong twice over: a T4 has 16 GB
-of VRAM against the ~62 GB this model needs in bf16, and West Europe does not offer A100
-at all. Sweden Central and Italy North do; both are EU regions, so the data-residency
-argument that motivated self-hosting in the first place still holds.
-
-**Check the ticket before doing anything else.** Nothing past step 5 can proceed without it.
+West Europe, which offers no A100 at any quota. Support case 2608090050000148 can be closed.
+Check with `az containerapp env list-usages -n <env> -g <rg>` before ever filing another.
 
 ### Do not merge the branch early
 
@@ -71,30 +57,208 @@ fails, `provisioningState` becomes `Failed` — and a Failed app can only be del
 updated. The `screening-identity` user-assigned identity exists independently, so it can be
 granted AcrPull first and handed to the app at creation. Hit and fixed on 2026-08-09.
 
+### SOLVED: why every `minReplicas: 0` revision died (2026-08-10)
+
+For two days no scale-to-zero revision could reach a healthy state — each went straight to
+`ActivationFailed`, so the app was undeployable and the only way to run the model at all was
+`minReplicas: 1`, which then could never scale down and quietly billed an A100.
+
+The answer was in `ContainerAppSystemLogs_CL`, not in anything `revision list` shows:
+
+```
+16:05:31  AssigningReplica              replica scheduled — cooldown clock starts here
+16:07:23  PulledImage                   111s to pull 8.9 GB
+16:08:20  ContainerStarted              vLLM begins loading weights
+16:08:20  ProbeFailed (StartUp)  ×9     normal — still loading
+16:10:31  ContainerTerminated           reason 'ManuallyStopped'
+16:10:31  KEDAScaleTargetDeactivated    "Deactivated ... from 1 to 0"
+```
+
+`16:05:31 + 300s = 16:10:31` exactly. **The autoscaler killed it**, because
+`cooldownPeriod` defaults to 300s and its clock starts when the replica is *scheduled*, not
+when the container starts. The image pull and container creation consumed more than half the
+budget before the model loaded a single byte.
+
+**The fix is one line: `cooldownPeriod: 900`.** It was never an activation timeout, a probe
+threshold, or anything about GPUs. With `minReplicas: 1` the autoscaler simply isn't allowed
+to scale below one, which is why that configuration appeared to work — and why it hid the
+bug completely.
+
+The arithmetic that settles it: at the original 135 MiB/s, pull (112s) + start (57s) + load
+(576s) = 745s, comfortably inside a 900s window. The bandwidth increase we tried alongside
+made it faster but was never required.
+
+**Lesson worth more than the fix:** `minReplicas: 1` was adopted to force a boot for
+measurement. It worked, and it removed the exact component that was failing. When a
+workaround makes a symptom disappear, it has hidden the evidence, not diagnosed anything.
+
+## Three rules about revisions, and how to check them
+
+Learned the expensive way on 2026-08-09/10.
+
+### 1. Revisions are immutable
+
+Any change to `properties.template` — image, args, `minReplicas`, `cooldownPeriod` — creates a
+*new* revision. You can never edit the one that is running.
+
+```bash
+az containerapp revision list -n screening-gemma -g screening-rg \
+  --query "[].{rev:name, created:properties.createdTime, active:properties.active}" -o table
+
+az containerapp revision show -n screening-gemma -g screening-rg \
+  --revision <NAME> --query "properties.template" -o yaml
+```
+
+### 2. Each revision carries its own scale settings
+
+A revision you deactivated still remembers `minReplicas: 1`. Anything that reactivates it --
+and `az containerapp update --yaml` does -- starts a replica immediately and bills for it.
+This happened three times in one morning, twice on an A100.
+
+**Run this after every `--yaml` update.** Any row with `active=True` and `min=1` is billing:
+
+```bash
+az containerapp revision list -n screening-gemma -g screening-rg \
+  --query "[].{rev:name, active:properties.active, state:properties.runningState, \
+replicas:properties.replicas, min:properties.template.scale.minReplicas, \
+cooldown:properties.template.scale.cooldownPeriod}" -o table
+
+az containerapp revision deactivate -n screening-gemma -g screening-rg --revision <NAME>
+```
+
+### 3. The cooldown clock starts when the replica is SCHEDULED
+
+Not when the container starts. With the default 300s cooldown, the image pull (112s) and
+container creation (57s) ate more than half the budget before vLLM began loading, so KEDA
+killed the replica mid-load and the revision went to `ActivationFailed` -- every time. The app
+was undeployable and the cause was invisible from `revision list` alone.
+
+The system log is where the answer was:
+
+```bash
+WS=$(az monitor log-analytics workspace show -g screening-rg \
+       -n workspacescreeningrg9322 --query customerId -o tsv)
+
+az monitor log-analytics query -w "$WS" --analytics-query "
+ContainerAppSystemLogs_CL
+| where RevisionName_s == '<REVISION>'
+| where Reason_s in ('AssigningReplica','PulledImage','ContainerStarted',
+                     'ContainerTerminated','KEDAScaleTargetDeactivated','ProbeFailed')
+| project TimeGenerated, Reason_s, Log_s
+| order by TimeGenerated asc" -o table
+```
+
+The interval from `AssigningReplica` to `KEDAScaleTargetDeactivated` is your cooldown, and it
+must exceed pull + start + weight load. Timestamps are **UTC**; Spain is CEST (UTC+2).
+
+### Am I being charged right now?
+
+```bash
+for a in screening-app screening-gemma; do
+  echo "=== $a ==="
+  az containerapp revision list -n $a -g screening-rg \
+    --query "[].{rev:name, state:properties.runningState, replicas:properties.replicas}" -o table
+done
+```
+
+Every `replicas` column at zero means nothing is running. **Do not use
+`az containerapp replica list` without `--revision`** -- it reports only the newest revision,
+and once showed an empty list while an A100 billed for two more hours.
+
+### Blue/green: how this should have been done
+
+Step 7 recreated `screening-app` by deleting it first. That is acceptable here only because
+nothing depends on the old URL. In production you never delete the thing that is serving.
+
+Container Apps has this built in, via revisions:
+
+```bash
+# 1. allow more than one revision to be live at once (default is Single)
+az containerapp revision set-mode -n <app> -g <rg> --mode multiple
+
+# 2. deploy the new version; it comes up as a new revision, taking no traffic
+az containerapp update -n <app> -g <rg> --image <new-image> --revision-suffix v2
+
+# 3. send it a slice of real traffic
+az containerapp ingress traffic set -n <app> -g <rg> \
+  --revision-weight <old-revision>=90 <new-revision>=10
+
+# 4. watch, then shift the rest -- or roll back instantly by reverting the weights
+az containerapp ingress traffic set -n <app> -g <rg> --revision-weight <new-revision>=100
+
+# 5. retire the old revision once you are confident
+az containerapp revision deactivate -n <app> -g <rg> --revision <old-revision>
+```
+
+The rollback is the point: step 4 reversed is one command and takes seconds, with no rebuild
+and no redeploy. Delete-and-recreate has no equivalent -- if the new app fails to start, the
+old one no longer exists.
+
+Note this only works across *revisions of one app*. Moving between environments (what step 7
+did) cannot use it, because an app cannot span environments. The blue/green version of a
+region move is: create the new app under a temporary name, verify it, repoint DNS, then
+delete the old one.
+
 ### Other notes
 
 The `gpu-a100` profile had to be defined at environment-creation time — Azure does not allow
 adding a GPU profile to an existing environment. It was accepted despite zero quota, because
 quota is enforced when a replica is scheduled, not when the profile is declared.
 
-## Cold start — measured, 2026-08-09
+## Share bandwidth: what it buys, what it costs
+
+Measured 2026-08-10. Weight load is the whole cold start, and it runs at exactly the share's
+provisioned rate — the read strategy makes no difference (see `vllm-app.yaml`).
+
+| Provisioned | Weight load | Cost/month |
+|---|---|---|
+| **135 MiB/s** (current) | 4m17s → **9m36s** | **€9.86** |
+| 550 MiB/s | **4m17s** | €40.15 |
+
+€0.0001 per MiB/s per hour, SSD LRS, Sweden Central. Charged whether the share is read or not
+— it is provisioned capacity, not usage. ~€30/month to halve the cold start; not worth it for
+a demo, worth revisiting if real traffic arrives.
+
+```bash
+az storage share-rm update --storage-account screeningweights -g screening-rg \
+  -n models --provisioned-bandwidth-mibps 550
+```
+
+**Increases apply instantly; decreases are blocked for 24 hours.** Check before assuming you
+can undo an experiment:
+
+```bash
+az storage share-rm show --storage-account screeningweights -g screening-rg -n models \
+  --query "{bandwidth:provisionedBandwidthMibps, nextDowngrade:nextAllowedProvisionedBandwidthDowngradeTime}"
+```
+
+## Cold start — measured, 2026-08-10
 
 | Phase | Time |
 |---|---|
 | Pull the 8.9 GB vLLM image | ~2 min |
 | vLLM engine init | ~1 min |
-| Load 58.25 GiB of weights off the share | **~10 min** |
+| Load 58.25 GiB of weights off the share | **9m36s** at 135 MiB/s |
 | **Total** | **~13 min** |
 
-Weight loading dominates, and the share is the bottleneck: 49.8 GB in 343s ≈ 145 MB/s,
-which is the share's provisioned 135 MiB/s. Two levers, neither tried yet:
+Weight loading dominates completely, and it runs at exactly the share's provisioned rate.
+All four measurements, so nobody has to re-run them:
 
-- **Raise the share's provisioned throughput** to 550 MiB/s. Possible in place, no
-  recreation — that is what Provisioned v2 buys.
-- **Force vLLM's prefetch.** Its own log says: *"Auto-prefetch is disabled because the
-  filesystem (CIFS) is not a recognized network FS (NFS/Lustre). If you want to force
-  prefetching, start vLLM with --sa…"* (flag truncated in the log; find the full name in
-  `vllm serve --help`). Azure Files is SMB/CIFS, so this optimisation is off by default.
+| Bandwidth | Load strategy | First shard | Total load |
+|---|---|---|---|
+| 135 MiB/s | lazy (default) | 343.6s | 9m36s |
+| 135 MiB/s | eager | 386.8s | 8m04s |
+| 550 MiB/s | eager | 254.7s | 5m24s |
+| 550 MiB/s | lazy (default) | **203.9s** | **4m17s** |
+
+Two conclusions:
+
+- **Bandwidth is the only real lever.** Doubling it roughly halves the load. See "Share
+  bandwidth" above for what that costs.
+- **`--safetensors-load-strategy eager` is a trap.** vLLM's own startup log recommends it for
+  network filesystems and Azure Files is one — but it was *slower* at both bandwidths. Both
+  strategies sit at the share's ceiling, so the read pattern was never the limit. Not set;
+  do not re-add without a measurement.
 
 13 minutes is the accepted trade for an A100 that costs nothing while idle. Making it
 invisible to callers means `/screen` should return 202 and be polled rather than blocking —
