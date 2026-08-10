@@ -29,6 +29,37 @@ _ARTICLE9_ENTITIES = [
 _SCORE = 0.85
 
 
+def _is_word_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _whole_words(text: str, start: int, end: int) -> tuple[int, int]:
+    """Grow a span outwards until neither edge cuts a word in half.
+
+    `str.find` is plain substring matching, so a quote of "Black" as an
+    ETHNICITY also lands inside "BlackRock" -- and redacting that span alone
+    leaves "<ETHNICITY>Rock", corrupting the employer the candidate is scored
+    on. Growing (rather than dropping the occurrence) is the safe direction:
+    the span never shrinks, so this can only ever redact more, never less. It
+    also catches the inflected form -- a model that quotes "Muslim" against a
+    transcript saying "Muslims" would otherwise leave the trailing "s" behind.
+
+    Args:
+        text: The transcript the offsets refer to.
+        start: Start offset of the raw substring match.
+        end: End offset (exclusive) of the raw substring match.
+
+    Returns:
+        The widened ``(start, end)``. Unchanged when both edges already sit on
+        a word boundary, or when the quote itself begins/ends with punctuation.
+    """
+    while start > 0 and _is_word_char(text[start]) and _is_word_char(text[start - 1]):
+        start -= 1
+    while end < len(text) and _is_word_char(text[end - 1]) and _is_word_char(text[end]):
+        end += 1
+    return start, end
+
+
 class DetectedEntity(BaseModel):
     """One special-category disclosure, quoted verbatim from the transcript."""
 
@@ -122,9 +153,10 @@ class LLMGuardrailRecognizer(EntityRecognizer):
             # redacting only the first mention leaks the rest to the model.
             # `seen` absorbs the duplicates a model asked for "every occurrence"
             # tends to return.
-            start = text.find(item.text)
-            while start != -1:
-                end = start + len(item.text)
+            match_start = text.find(item.text)
+            while match_start != -1:
+                match_end = match_start + len(item.text)
+                start, end = _whole_words(text, match_start, match_end)
                 if (entity_type, start, end) not in seen:
                     seen.add((entity_type, start, end))
                     results.append(
@@ -135,5 +167,5 @@ class LLMGuardrailRecognizer(EntityRecognizer):
                             score=_SCORE,
                         )
                     )
-                start = text.find(item.text, end)
+                match_start = text.find(item.text, match_end)
         return results

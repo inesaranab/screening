@@ -112,3 +112,31 @@ async def test_rail_failure_raises_instead_of_returning_a_bogus_scrub():
 
     with pytest.raises(RuntimeError, match="guardrail rail failed"):
         await guardrail.scrub("I am a Quaker.")
+
+
+@pytest.mark.asyncio
+async def test_an_unapplied_input_rail_fails_closed_instead_of_echoing_raw_text(
+    monkeypatch,
+):
+    """If the input rail is ever not applied -- rails.co missing from the image,
+    a Colang release that renames the `input rails` flow -- `bot say` echoes the
+    *input* message back untouched. That echo is valid base64 and decodes
+    cleanly to the raw transcript, so every other failure check passes and the
+    adapter would hand unredacted candidate data to the model with
+    pii_redacted=False and no error. "The rail ran" has to be observed in the
+    output, not assumed from the fact that it parsed."""
+    inner = _EchoInner()
+    guardrail = NemoGuardrail(inner=inner)
+
+    async def _echo_the_user_message(messages, **kwargs):
+        return {"role": "assistant", "content": messages[-1]["content"]}
+
+    # Simulates Colang echoing the input straight back, which is what happens
+    # when the input rail is not applied. Via monkeypatch because replacing a
+    # bound method is a type violation that ty rejects and ruff rewrites back --
+    # the fixture does it without either tool objecting, and undoes it after.
+    monkeypatch.setattr(guardrail._rails, "generate_async", _echo_the_user_message)
+
+    with pytest.raises(RuntimeError, match="guardrail rail failed"):
+        await guardrail.scrub("My name is Ines and I am a Quaker.")
+    assert inner.calls == []

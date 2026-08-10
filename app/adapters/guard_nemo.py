@@ -46,6 +46,16 @@ _WITHHELD = WITHHELD_MESSAGE
 # ColangValueError there -- the sentinel would never reach `scrub` at all.
 _RAIL_FAILED = "__GUARDRAIL_RAIL_FAILED__"
 
+# Marks a payload as having been produced by ScrubAction. Without it, "the rail
+# ran" is assumed rather than observed: if the input rail is ever not applied --
+# rails.co missing from the image, a Colang version that renames the `input
+# rails` flow -- `bot say` echoes the *input* message back, which is valid
+# base64 that decodes cleanly to the untouched transcript. `scrub` would hand
+# that to the model as scrubbed text with no flag raised, the exact fail-open
+# every other check here exists to prevent. ':' is outside base64's alphabet,
+# so it can never collide with the payload.
+_SCRUBBED = "scrubbed:"
+
 
 def _encode(text: str) -> str:
     """Wrap a transcript in base64 for the trip through Colang.
@@ -116,7 +126,10 @@ class NemoGuardrail:
             # the failure for `scrub` to act on.
             logger.exception("guardrail detection failed inside NeMo input rail")
             return _RAIL_FAILED
-        return _encode(result.clean_text)
+        # Prefixed so `scrub` can tell "the action ran" from "Colang echoed the
+        # input back". The input is also valid base64, so decoding alone proves
+        # nothing -- see the note on _SCRUBBED.
+        return _SCRUBBED + _encode(result.clean_text)
 
     async def scrub(self, text: str) -> ScrubResult:
         """Scrub a transcript by running it through the NeMo input rails.
@@ -147,16 +160,22 @@ class NemoGuardrail:
 
         # Four ways the rail can fail to produce scrubbed text, none of which a
         # healthy run reaches: our sentinel, the "None" NeMo substitutes when an
-        # action returns nothing, empty output, and anything that is not the
-        # payload the action wrapped -- which covers Colang handing back a
-        # mangled or unrelated string just as well as an outright error.
-        if _RAIL_FAILED in content or content == "None" or not content:
+        # action returns nothing, empty output, and output missing the marker
+        # only ScrubAction adds -- which covers Colang echoing the input back
+        # (valid base64, decodes to the raw transcript) just as well as an
+        # outright error.
+        if (
+            _RAIL_FAILED in content
+            or content == "None"
+            or not content
+            or not content.startswith(_SCRUBBED)
+        ):
             raise RuntimeError(
                 "guardrail rail failed: detection did not complete, refusing to "
                 "return a transcript that was never scrubbed"
             )
         try:
-            clean = _decode(content)
+            clean = _decode(content.removeprefix(_SCRUBBED))
         except ValueError as exc:
             raise RuntimeError(
                 "guardrail rail failed: detection did not complete, refusing to "
