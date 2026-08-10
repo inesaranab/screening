@@ -23,6 +23,10 @@ class Settings(BaseSettings):
             Deliberately separate and much larger: that endpoint scales to zero,
             so the first request after an idle period waits for a GPU to start
             and load the model.
+        jobs_account_url: Table endpoint of the account holding job state.
+        jobs_queue_url: Queue endpoint of the same account.
+        jobs_table_name: Table holding one entity per screening job.
+        jobs_queue_name: Queue carrying accepted job ids to the worker.
         service_api_key: Shared key clients must send to call this service.
     """
 
@@ -45,6 +49,14 @@ class Settings(BaseSettings):
     # return 202 and be polled (see infra/gemma/README.md). This makes the
     # blocking path correct in the meantime rather than silently broken.
     llm_guardrail_timeout_s: float = 900.0
+
+    # Job state and the work queue. A separate account from the model-weights
+    # share: that one is kind=FileStorage, which serves file shares only and has
+    # no table or queue endpoint.
+    jobs_account_url: str = "https://screeningjobs.table.core.windows.net/"
+    jobs_queue_url: str = "https://screeningjobs.queue.core.windows.net/"
+    jobs_table_name: str = "jobs"
+    jobs_queue_name: str = "screenings"
 
     # No default and non-empty on purpose: the app refuses to start without a
     # real key, so auth can never be silently disabled by a missing OR empty

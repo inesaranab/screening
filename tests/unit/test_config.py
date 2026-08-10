@@ -16,3 +16,13 @@ def test_guardrail_timeout_is_long_enough_for_a_cold_start():
     from app.config import settings
 
     assert settings.llm_guardrail_timeout_s >= 900
+
+
+def test_jobs_storage_defaults_point_at_the_general_purpose_account():
+    """The premium file-share account cannot host a table or a queue, so job
+    state lives in a separate general-purpose account."""
+    from app.config import Settings
+
+    assert "screeningjobs" in Settings.model_fields["jobs_account_url"].default
+    assert Settings.model_fields["jobs_table_name"].default
+    assert Settings.model_fields["jobs_queue_name"].default

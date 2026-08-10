@@ -61,7 +61,26 @@ the framework docs can't know.
 - Config is environment-driven via `pydantic-settings` (`SCREENING_` prefix);
   `.env.example` is the committed template, `.env` is never committed.
 
-## 6. Test-first — verified, not assumed
+## 6. Docstrings — Google style, factual
+
+- **Every module, class and public function has a Google-style docstring**: a summary
+  line, then `Args:` / `Returns:` / `Raises:` for functions, `Attributes:` for models.
+- **State the property, not the incident that taught it.** "Does not raise; any
+  exception is recorded as a failed job" — not "we learned the hard way that an
+  uncaught exception leaves the job pending forever".
+- **No war stories, no dates, no measurements, no "we".** Decision records and
+  measured findings belong in `infra/*/README.md` or the commit message, where a
+  reader is looking for history. A docstring is read by someone trying to use the
+  thing.
+- **Self-contained.** Do not explain one symbol by referring to another
+  ("an enum for the same reason as NextStep"). Say what *this* one does.
+- **No prose constants.** A block of explanation assigned to a module-level string
+  is dead code, not documentation.
+- Exception to all of the above: `#` comments *inside* a function body may carry the
+  non-obvious "why", including a measurement, when the code would otherwise look
+  wrong or invite a regression.
+
+## 7. Test-first — verified, not assumed
 
 - Two tiers, and a change isn't done until the right tier is green:
   - `pytest -m "not live"` — deterministic, uses **fakes behind the ports** (canned +

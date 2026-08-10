@@ -10,6 +10,8 @@ import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated
 
+from azure.data.tables.aio import TableClient
+from azure.identity.aio import DefaultAzureCredential
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -22,7 +24,7 @@ from fastapi import (
 )
 
 from app.adapters.guard_classifier import ClassifierGuardrail
-from app.adapters.job_store_memory import InMemoryJobStore
+from app.adapters.job_store_table import AzureTableJobStore
 from app.adapters.llm_openai import OpenAICompatibleLLM
 from app.config import settings
 from app.domain.models import Job, JobStatus, ScreenRequest
@@ -34,18 +36,28 @@ logger = logging.getLogger("screen")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Build the expensive adapters once at startup, tear the LLM client down at exit.
+    """Build the adapters once at startup and release them at shutdown."""
     setup_logging()
     guardrail = ClassifierGuardrail()
     llm = OpenAICompatibleLLM()
-    # In-memory for now: correct for a single replica, wrong the moment the
-    # app scales out, because a poll can land on a replica that never saw
-    # the job. The Azure Table adapter replaces this line and nothing else.
+
+    # Managed identity, so no storage key or connection string is configured.
+    # DefaultAzureCredential resolves to the container app's assigned identity
+    # in Azure and to the developer's az-cli login locally.
+    credential = DefaultAzureCredential()
+    table = TableClient(
+        endpoint=settings.jobs_account_url,
+        table_name=settings.jobs_table_name,
+        credential=credential,
+    )
+
     app.state.service = ScreenService(
-        guardrail=guardrail, llm=llm, job_store=InMemoryJobStore()
+        guardrail=guardrail, llm=llm, job_store=AzureTableJobStore(table)
     )
     yield
     await llm.aclose()
+    await table.close()
+    await credential.close()
 
 
 app = FastAPI(title="Screening /screen", lifespan=lifespan)
