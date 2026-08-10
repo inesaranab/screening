@@ -5,12 +5,17 @@ measured F1: Gemma-4 averaged 0.786 across the seven categories against
 GLiNER's 0.552, and beat the frontier cloud model too (see INE-16).
 """
 
+import logging
+import re
+
 import instructor
 from openai import OpenAI
 from presidio_analyzer import EntityRecognizer, RecognizerResult
 from pydantic import BaseModel
 
 from app.config import settings
+
+logger = logging.getLogger("screen")
 
 _ARTICLE9_ENTITIES = [
     "RELIGION",
@@ -33,16 +38,20 @@ def _is_word_char(char: str) -> bool:
     return char.isalnum() or char == "_"
 
 
-def _whole_words(text: str, start: int, end: int) -> tuple[int, int]:
-    """Grow a span outwards until neither edge cuts a word in half.
+def _span_for_match(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """Turn a raw substring hit into a span that does not cut a word in half.
 
-    `str.find` is plain substring matching, so a quote of "Black" as an
-    ETHNICITY also lands inside "BlackRock" -- and redacting that span alone
-    leaves "<ETHNICITY>Rock", corrupting the employer the candidate is scored
-    on. Growing (rather than dropping the occurrence) is the safe direction:
-    the span never shrinks, so this can only ever redact more, never less. It
-    also catches the inflected form -- a model that quotes "Muslim" against a
-    transcript saying "Muslims" would otherwise leave the trailing "s" behind.
+    Substring matching is blind to word boundaries, and the two ways it can
+    straddle one need opposite treatment:
+
+    * The hit STARTS mid-word -- "he" inside "the"/"When", "MS" inside "CMS".
+      There is no reading of that occurrence under which the candidate
+      disclosed anything, so it is dropped. Growing it leftwards instead (the
+      previous behaviour) redacted whole innocent words: a quote of "he"
+      turned "When the interviewer" into "<SEXUAL_ORIENTATION> interviewer".
+    * The hit ENDS mid-word -- "Muslim" against a transcript saying "Muslims".
+      That is the same disclosure inflected, so the span is grown rightwards.
+      Stopping at the raw end would leave "<RELIGION>s" behind.
 
     Args:
         text: The transcript the offsets refer to.
@@ -50,11 +59,11 @@ def _whole_words(text: str, start: int, end: int) -> tuple[int, int]:
         end: End offset (exclusive) of the raw substring match.
 
     Returns:
-        The widened ``(start, end)``. Unchanged when both edges already sit on
-        a word boundary, or when the quote itself begins/ends with punctuation.
+        The span to redact, or None when the hit began mid-word and should be
+        discarded.
     """
-    while start > 0 and _is_word_char(text[start]) and _is_word_char(text[start - 1]):
-        start -= 1
+    if start > 0 and _is_word_char(text[start]) and _is_word_char(text[start - 1]):
+        return None
     while end < len(text) and _is_word_char(text[end - 1]) and _is_word_char(text[end]):
         end += 1
     return start, end
@@ -142,30 +151,61 @@ class LLMGuardrailRecognizer(EntityRecognizer):
         seen: set[tuple[str, int, int]] = set()
         for item in detected.entities:
             entity_type = item.entity_type.strip().upper()
-            if entity_type not in requested or not item.text:
+            if entity_type not in requested:
+                continue
+            # A quote with no alphanumeric character in it -- "", " ", "." --
+            # occurs almost everywhere in the transcript. Redacting every hit
+            # replaces the separators between words and destroys the text the
+            # model is scored on ("I<HEALTH>manage<HEALTH>my..."), so such a
+            # quote is never actionable.
+            if not any(char.isalnum() for char in item.text):
                 continue
             # Offsets are computed here, never asked of the model -- LLMs are
-            # unreliable at character arithmetic. No exact match means no
-            # trustworthy span, so the finding is dropped rather than guessed.
+            # unreliable at character arithmetic. No match means no trustworthy
+            # span, so the finding is dropped rather than guessed.
+            #
+            # Case-insensitive on purpose: a model that returns "Diabetes"
+            # against a transcript saying "diabetes" is pointing at a real
+            # disclosure, and the offsets it produces are still exact. Matching
+            # case-sensitively dropped it silently -- under-redaction of an
+            # Article 9 category is the one failure this recognizer exists to
+            # prevent.
             #
             # Every occurrence, not just the first: the same disclosure often
             # appears more than once ("I have diabetes ... my diabetes"), and
             # redacting only the first mention leaks the rest to the model.
             # `seen` absorbs the duplicates a model asked for "every occurrence"
             # tends to return.
-            match_start = text.find(item.text)
-            while match_start != -1:
-                match_end = match_start + len(item.text)
-                start, end = _whole_words(text, match_start, match_end)
-                if (entity_type, start, end) not in seen:
-                    seen.add((entity_type, start, end))
-                    results.append(
-                        RecognizerResult(
-                            entity_type=entity_type,
-                            start=start,
-                            end=end,
-                            score=_SCORE,
-                        )
+            matched = False
+            for match in re.finditer(re.escape(item.text), text, re.IGNORECASE):
+                span = _span_for_match(text, match.start(), match.end())
+                if span is None:
+                    continue
+                matched = True
+                key = (entity_type, span[0], span[1])
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(
+                    RecognizerResult(
+                        entity_type=entity_type,
+                        start=span[0],
+                        end=span[1],
+                        score=_SCORE,
                     )
-                match_start = text.find(item.text, match_end)
+                )
+            if not matched:
+                # Logged, not silent: a dropped quote is an Article 9
+                # disclosure the model saw and we did not redact. The quote
+                # itself is special-category data, so only its length is
+                # recorded.
+                logger.warning(
+                    "article9_quote_unmatched",
+                    extra={
+                        "context": {
+                            "entity_type": entity_type,
+                            "quote_length": len(item.text),
+                        }
+                    },
+                )
         return results

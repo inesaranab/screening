@@ -77,6 +77,62 @@ def test_drops_quotes_that_are_not_verbatim(recognizer, monkeypatch):
     assert recognizer.analyze("She said she is a Quaker.", ["RELIGION"], None) == []
 
 
+def test_ignores_hits_that_start_inside_another_word(recognizer, monkeypatch):
+    """Substring matching is blind to word boundaries: a short quote like "he"
+    also lands inside "the" and "When". Growing those hits leftwards to the word
+    edge redacted the innocent word whole -- "When the interviewer" came back as
+    "<SEXUAL_ORIENTATION> interviewer" -- destroying the transcript the model is
+    scored on. A hit that begins mid-word is not a disclosure; drop it."""
+    _model_returns(
+        monkeypatch,
+        recognizer,
+        [DetectedEntity(entity_type="SEXUAL_ORIENTATION", text="he")],
+    )
+
+    text = "When the interviewer asked, he said he is out at work."
+    results = recognizer.analyze(text, ["SEXUAL_ORIENTATION"], None)
+    spans = sorted((r.start, r.end) for r in results)
+
+    assert spans == [(28, 30), (36, 38)]
+    assert all(text[s:e] == "he" for s, e in spans)
+
+
+def test_ignores_quotes_with_no_alphanumeric_characters(recognizer, monkeypatch):
+    """A quote of " " or "." matches between every word. Redacting each hit
+    replaces the separators and shreds the transcript
+    ("I<HEALTH>manage<HEALTH>my..."), so it can never be actionable."""
+    _model_returns(
+        monkeypatch, recognizer, [DetectedEntity(entity_type="HEALTH", text=" ")]
+    )
+
+    assert recognizer.analyze("I manage my condition well.", ["HEALTH"], None) == []
+
+
+def test_matches_regardless_of_case(recognizer, monkeypatch):
+    """Models routinely re-capitalise what they quote. The offsets are still
+    exact, so dropping the finding is pure under-redaction -- Article 9 data
+    reaching the model, which is the one failure this recognizer prevents."""
+    _model_returns(
+        monkeypatch, recognizer, [DetectedEntity(entity_type="HEALTH", text="Diabetes")]
+    )
+
+    results = recognizer.analyze("I have diabetes.", ["HEALTH"], None)
+
+    assert [(r.start, r.end) for r in results] == [(7, 15)]
+
+
+def test_grows_a_hit_that_ends_inside_the_same_word(recognizer, monkeypatch):
+    """ "Muslim" against a transcript saying "Muslims" is the same disclosure
+    inflected. Stopping at the raw match end leaves "<RELIGION>s" behind."""
+    _model_returns(
+        monkeypatch, recognizer, [DetectedEntity(entity_type="RELIGION", text="Muslim")]
+    )
+
+    results = recognizer.analyze("Two Muslims on the team.", ["RELIGION"], None)
+
+    assert [(r.start, r.end) for r in results] == [(4, 11)]
+
+
 def test_makes_no_call_when_no_supported_entity_is_requested(recognizer):
     # No stub: a real call would try to reach the endpoint and fail, so passing
     # proves we short-circuit before touching the network.

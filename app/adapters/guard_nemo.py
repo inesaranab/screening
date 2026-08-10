@@ -154,7 +154,13 @@ class NemoGuardrail:
         response = await self._rails.generate_async(
             messages=[{"role": "user", "content": _encode(text)}]
         )
-        content = response["content"] if isinstance(response, dict) else str(response)
+        # `.get`, not `["content"]`: a dict-shaped response without that key
+        # would raise KeyError straight past every fail-closed check below and
+        # surface as an unclassified 500. Missing content is just another way
+        # the rail failed to produce scrubbed text.
+        content = (
+            response.get("content") if isinstance(response, dict) else str(response)
+        )
         content = "" if content is None else str(content)
         content = content.strip()
 
