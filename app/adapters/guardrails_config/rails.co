@@ -6,6 +6,11 @@ import guardrails
 #
 # ScrubAction is registered at runtime by NemoGuardrail so it can close over
 # the existing ClassifierGuardrail instance.
+#
+# $user_message is base64 here, not readable text: Colang interpolates message
+# content into expressions it evaluates, which corrupts `$word` into `var_word`
+# and mangles backslashes. ScrubAction decodes on the way in and re-encodes on
+# the way out -- see `_encode` in guard_nemo.py.
 flow input rails $input_text
     global $user_message
     $user_message = await ScrubAction(text=$user_message)

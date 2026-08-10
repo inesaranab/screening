@@ -124,6 +124,12 @@ _POSTCODE = [
 ]
 
 
+# The text that replaces a transcript flagged as injection. Exported because
+# NemoGuardrail has to recognise it coming back out of the rails -- keeping two
+# copies of the literal in sync by hand is how injection silently degrades into
+# "PII was redacted".
+WITHHELD_MESSAGE = "[flagged by injection classifier — content withheld from scoring]"
+
 _INJECTION_MODEL = "protectai/deberta-v3-base-prompt-injection-v2"
 # Flag when the INJECTION probability reaches this.
 _INJECTION_THRESHOLD = 0.5
@@ -229,7 +235,7 @@ class ClassifierGuardrail:
         #    content and skip PII work entirely — nothing downstream sees it.
         if self._injection_score(text) >= _INJECTION_THRESHOLD:
             return ScrubResult(
-                clean_text="[flagged by injection classifier — content withheld from scoring]",
+                clean_text=WITHHELD_MESSAGE,
                 pii_redacted=False,
                 injection_detected=True,
             )

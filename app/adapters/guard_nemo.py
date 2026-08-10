@@ -16,12 +16,14 @@ The *shape* of that rail is copied though -- an action returns the masked
 string and Colang reassigns `$user_message` to it.
 """
 
+import base64
+import binascii
 import logging
 import pathlib
 
 from nemoguardrails import LLMRails, RailsConfig
 
-from app.adapters.guard_classifier import ClassifierGuardrail
+from app.adapters.guard_classifier import WITHHELD_MESSAGE, ClassifierGuardrail
 from app.domain.models import ScrubResult
 from app.ports.guardrail import Guardrail
 
@@ -29,7 +31,10 @@ logger = logging.getLogger("screen")
 
 _CONFIG_DIR = pathlib.Path(__file__).parent / "guardrails_config"
 
-_WITHHELD = "[flagged by injection classifier — content withheld from scoring]"
+# Imported, never re-spelled: injection is signalled to `scrub` only by this
+# exact string coming back out of the rails, so a second copy drifting out of
+# sync would silently downgrade an injection to "PII was redacted".
+_WITHHELD = WITHHELD_MESSAGE
 
 # NeMo catches exceptions raised inside an action, logs them, and lets the flow
 # continue with the action's result as None -- which Colang then stringifies to
@@ -40,6 +45,31 @@ _WITHHELD = "[flagged by injection classifier — content withheld from scoring]
 # then evaluates, and control characters (a null byte, originally) raise
 # ColangValueError there -- the sentinel would never reach `scrub` at all.
 _RAIL_FAILED = "__GUARDRAIL_RAIL_FAILED__"
+
+
+def _encode(text: str) -> str:
+    """Wrap a transcript in base64 for the trip through Colang.
+
+    Colang does not treat a message as opaque data: the runtime interpolates it
+    into expressions it then evaluates. Measured against nemoguardrails 0.23.0:
+
+        "I earn $rate"      -> "I earn var_rate"   (the model is then scored on
+                               text the candidate never said, and the difference
+                               also raises a false `pii_redacted`)
+        "C:\\builds\\app"   -> "C:uildspp"         (`\\b` and `\\a` read as escapes)
+
+    base64's alphabet ([A-Za-z0-9+/=]) contains none of the characters Colang
+    reacts to, so encoding in and decoding out makes the round trip lossless.
+    """
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _decode(payload: str) -> str:
+    """Reverse `_encode`. Raises ValueError on anything that is not our payload."""
+    try:
+        return base64.b64decode(payload.encode("ascii"), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise ValueError("rail output was not a valid transcript payload") from exc
 
 
 class NemoGuardrail:
@@ -70,22 +100,23 @@ class NemoGuardrail:
         and a second rail would re-run the whole detection stack per request.
 
         Args:
-            text: The raw transcript from the Colang flow.
+            text: The base64-wrapped transcript from the Colang flow (see
+                `_encode` for why it is not the raw string).
 
         Returns:
-            The transcript with PII and Article 9 spans replaced by `<TYPE>`
-            placeholders, the withheld marker when injection fired, or
-            `_RAIL_FAILED` when detection itself broke.
+            The base64-wrapped transcript with PII and Article 9 spans replaced
+            by `<TYPE>` placeholders, the wrapped withheld marker when injection
+            fired, or `_RAIL_FAILED` when detection itself broke.
         """
         try:
-            result = await self._inner.scrub(text)
+            result = await self._inner.scrub(_decode(text))
         except Exception:
             # Caught rather than propagated: NeMo would swallow it anyway and
             # continue with None. Converting to a sentinel is what preserves
             # the failure for `scrub` to act on.
             logger.exception("guardrail detection failed inside NeMo input rail")
             return _RAIL_FAILED
-        return result.clean_text
+        return _encode(result.clean_text)
 
     async def scrub(self, text: str) -> ScrubResult:
         """Scrub a transcript by running it through the NeMo input rails.
@@ -108,27 +139,36 @@ class NemoGuardrail:
                 prevent.
         """
         response = await self._rails.generate_async(
-            messages=[{"role": "user", "content": text}]
+            messages=[{"role": "user", "content": _encode(text)}]
         )
         content = response["content"] if isinstance(response, dict) else str(response)
         content = "" if content is None else str(content)
+        content = content.strip()
 
-        # Three ways the rail can fail to produce scrubbed text, none of which
-        # a healthy run reaches: our sentinel, the "None" NeMo substitutes when
-        # an action returns nothing, and empty output (a real scrub always
-        # returns either the transcript or the withheld marker).
-        if _RAIL_FAILED in content or content == "None" or not content.strip():
+        # Four ways the rail can fail to produce scrubbed text, none of which a
+        # healthy run reaches: our sentinel, the "None" NeMo substitutes when an
+        # action returns nothing, empty output, and anything that is not the
+        # payload the action wrapped -- which covers Colang handing back a
+        # mangled or unrelated string just as well as an outright error.
+        if _RAIL_FAILED in content or content == "None" or not content:
             raise RuntimeError(
                 "guardrail rail failed: detection did not complete, refusing to "
                 "return a transcript that was never scrubbed"
             )
+        try:
+            clean = _decode(content)
+        except ValueError as exc:
+            raise RuntimeError(
+                "guardrail rail failed: detection did not complete, refusing to "
+                "return a transcript that was never scrubbed"
+            ) from exc
 
-        if _WITHHELD in content:
+        if clean == _WITHHELD:
             return ScrubResult(
                 clean_text=_WITHHELD, pii_redacted=False, injection_detected=True
             )
         return ScrubResult(
-            clean_text=content,
-            pii_redacted=content != text,
+            clean_text=clean,
+            pii_redacted=clean != text,
             injection_detected=False,
         )

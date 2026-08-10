@@ -39,6 +39,23 @@ def test_maps_quoted_text_to_character_offsets(recognizer, monkeypatch):
     assert results[0].end == 24
 
 
+def test_flags_every_occurrence_not_just_the_first(recognizer, monkeypatch):
+    """`str.find` always returns the first match, so a disclosure repeated later
+    in the transcript keeps its original offsets and the second mention is left
+    unredacted -- Article 9 data reaching the model is exactly what this
+    recognizer exists to prevent."""
+    _model_returns(
+        monkeypatch, recognizer, [DetectedEntity(entity_type="HEALTH", text="diabetes")]
+    )
+
+    text = "I have diabetes, and my diabetes is well managed."
+    results = recognizer.analyze(text, ["HEALTH"], None)
+
+    spans = sorted((r.start, r.end) for r in results)
+    assert spans == [(7, 15), (24, 32)]
+    assert all(text[s:e] == "diabetes" for s, e in spans)
+
+
 def test_drops_entities_the_caller_did_not_request(recognizer, monkeypatch):
     _model_returns(
         monkeypatch, recognizer, [DetectedEntity(entity_type="HEALTH", text="diabetes")]

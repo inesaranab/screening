@@ -55,7 +55,7 @@ class LLMGuardrailRecognizer(EntityRecognizer):
             OpenAI(
                 base_url=settings.llm_guardrail_base_url,
                 api_key="not-used-by-vllm",  # stub: the SDK requires one, vLLM ignores it
-                timeout=settings.llm_timeout_s,
+                timeout=settings.llm_guardrail_timeout_s,
             ),
             mode=instructor.Mode.JSON_SCHEMA,
         )
@@ -108,21 +108,32 @@ class LLMGuardrailRecognizer(EntityRecognizer):
         )
 
         results = []
+        seen: set[tuple[str, int, int]] = set()
         for item in detected.entities:
-            if item.entity_type not in requested:
+            entity_type = item.entity_type.strip().upper()
+            if entity_type not in requested or not item.text:
                 continue
             # Offsets are computed here, never asked of the model -- LLMs are
             # unreliable at character arithmetic. No exact match means no
             # trustworthy span, so the finding is dropped rather than guessed.
+            #
+            # Every occurrence, not just the first: the same disclosure often
+            # appears more than once ("I have diabetes ... my diabetes"), and
+            # redacting only the first mention leaks the rest to the model.
+            # `seen` absorbs the duplicates a model asked for "every occurrence"
+            # tends to return.
             start = text.find(item.text)
-            if start == -1:
-                continue
-            results.append(
-                RecognizerResult(
-                    entity_type=item.entity_type,
-                    start=start,
-                    end=start + len(item.text),
-                    score=_SCORE,
-                )
-            )
+            while start != -1:
+                end = start + len(item.text)
+                if (entity_type, start, end) not in seen:
+                    seen.add((entity_type, start, end))
+                    results.append(
+                        RecognizerResult(
+                            entity_type=entity_type,
+                            start=start,
+                            end=end,
+                            score=_SCORE,
+                        )
+                    )
+                start = text.find(item.text, end)
         return results

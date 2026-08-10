@@ -21,7 +21,6 @@ _HF_HUB_CACHE = (
 )
 _REQUIRED_MODELS = [
     "protectai/deberta-v3-base-prompt-injection-v2",
-    "urchade/gliner_multi_pii-v1",
 ]
 
 
@@ -52,7 +51,7 @@ def pytest_collection_modifyitems(config, items):
 def guardrail():
     """The real guardrail, built once for the entire test session.
 
-    Loading Presidio, spaCy, GLiNER and the injection classifier costs ~30s and
+    Loading Presidio, spaCy and the injection classifier costs ~30s and
     several GB of RAM, so a per-test (function-scoped) fixture pays that cost once
     per test — six tests meant six full loads. Session scope means one load no
     matter which files or how many tests are selected.
