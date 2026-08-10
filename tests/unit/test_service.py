@@ -1,5 +1,6 @@
 import pytest
 
+from app.adapters.job_queue_memory import InMemoryJobQueue
 from app.adapters.job_store_memory import InMemoryJobStore
 from app.domain.models import Assessment, NextStep, ScrubResult
 from app.domain.service import ScreenRequest, ScreenService
@@ -18,7 +19,10 @@ async def test_injection_fails_closed_without_calling_llm():
             raise AssertionError("LLM must not be called on injection")
 
     service = ScreenService(
-        guardrail=guard, llm=BrokenLLM(), job_store=InMemoryJobStore()
+        guardrail=guard,
+        llm=BrokenLLM(),
+        job_store=InMemoryJobStore(),
+        job_queue=InMemoryJobQueue(),
     )
     result = await service.screen(_REQ)
     assert result.flags.injection_detected
@@ -33,7 +37,12 @@ async def test_clean_path_sets_flags():
     llm = FakeLLM(
         Assessment(fit_score=4, rationale="ok", evidence=[], next_step=NextStep.ADVANCE)
     )
-    service = ScreenService(guardrail=guard, llm=llm, job_store=InMemoryJobStore())
+    service = ScreenService(
+        guardrail=guard,
+        llm=llm,
+        job_store=InMemoryJobStore(),
+        job_queue=InMemoryJobQueue(),
+    )
     result = await service.screen(_REQ)
     assert result.flags.pii_redacted is True
     assert result.flags.low_confidence is True

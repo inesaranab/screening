@@ -12,8 +12,8 @@ from typing import Annotated
 
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
+from azure.storage.queue.aio import QueueClient
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     Header,
@@ -24,6 +24,7 @@ from fastapi import (
 )
 
 from app.adapters.guard_classifier import ClassifierGuardrail
+from app.adapters.job_queue_azure import AzureJobQueue
 from app.adapters.job_store_table import AzureTableJobStore
 from app.adapters.llm_openai import OpenAICompatibleLLM
 from app.config import settings
@@ -50,12 +51,21 @@ async def lifespan(app: FastAPI):
         table_name=settings.jobs_table_name,
         credential=credential,
     )
+    queue = QueueClient(
+        account_url=settings.jobs_queue_url,
+        queue_name=settings.jobs_queue_name,
+        credential=credential,
+    )
 
     app.state.service = ScreenService(
-        guardrail=guardrail, llm=llm, job_store=AzureTableJobStore(table)
+        guardrail=guardrail,
+        llm=llm,
+        job_store=AzureTableJobStore(table),
+        job_queue=AzureJobQueue(queue),
     )
     yield
     await llm.aclose()
+    await queue.close()
     await table.close()
     await credential.close()
 
@@ -85,25 +95,23 @@ def get_service(request: Request) -> ScreenService:
 @app.post("/screen", status_code=status.HTTP_202_ACCEPTED, response_model=Job)
 async def screen(
     request: ScreenRequest,
-    background: BackgroundTasks,
     service: Annotated[ScreenService, Depends(get_service)],
     auth: Annotated[None, Depends(require_api_key)],
 ) -> Job:
     """Accept a screening and hand back a handle to poll with.
 
-    202, not 200: the answer does not exist yet. The Article 9 detector scales
-    to zero and takes minutes to wake, while Azure's ingress closes any request
-    at 240 seconds -- so a synchronous result is a promise the platform will not
-    let us keep. Measured 2026-08-10: a cold request died at exactly 240s with a
-    504 from the edge, before the app was consulted at all.
+    The status is 202 because the result does not exist yet. The detector
+    scales to zero and takes minutes to wake, and Azure Container Apps closes
+    any request after 240 seconds, so a screening cannot be returned within the
+    request that submits it.
 
-    The work runs in a background task for now. That is the weak part of this
-    design: it lives in the web process, so the app cannot scale to zero while
-    a job is in flight. Moving it to a queue-triggered worker is the next step
-    and needs no change here -- `run` already does not care who calls it.
+    The screening is performed by a separate worker, so no work is held in the
+    web process and the app can scale to zero while a job is outstanding.
+
+    Returns:
+        The accepted job, pending, carrying the id to poll with.
     """
     job_id = await service.start(request)
-    background.add_task(service.run, job_id, request)
     logger.info("screen_accepted", extra={"context": {"job": job_id}})
     return Job(id=job_id)
 

@@ -5,6 +5,7 @@ import pytest
 from deepeval import assert_test
 from deepeval.test_case import LLMTestCase
 
+from app.adapters.job_queue_memory import InMemoryJobQueue
 from app.adapters.job_store_memory import InMemoryJobStore
 from app.adapters.llm_openai import OpenAICompatibleLLM
 from app.domain.models import ScreenRequest
@@ -45,7 +46,10 @@ def test_assessment_meets_quality_bar(case, guardrail):
         # screen() itself never touches the store; the constructor needs one
         # because the service also exposes start/run/result.
         service = ScreenService(
-            guardrail=FakeGuardrail(scrub), llm=llm, job_store=InMemoryJobStore()
+            guardrail=FakeGuardrail(scrub),
+            llm=llm,
+            job_store=InMemoryJobStore(),
+            job_queue=InMemoryJobQueue(),
         )
         try:
             result = await service.screen(

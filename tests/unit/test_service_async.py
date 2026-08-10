@@ -10,7 +10,9 @@ from conftest import FakeGuardrail, FakeLLM
 _REQ = ScreenRequest(transcript="I am a Quaker.", job_description="Backend")
 
 
-def _service(guardrail=None, llm=None, store=None) -> ScreenService:
+def _service(guardrail=None, llm=None, store=None, queue=None) -> ScreenService:
+    from app.adapters.job_queue_memory import InMemoryJobQueue
+
     return ScreenService(
         guardrail=guardrail or FakeGuardrail(ScrubResult(clean_text="clean")),
         llm=llm
@@ -20,6 +22,7 @@ def _service(guardrail=None, llm=None, store=None) -> ScreenService:
             )
         ),
         job_store=store or InMemoryJobStore(),
+        job_queue=queue or InMemoryJobQueue(),
     )
 
 
@@ -104,3 +107,30 @@ async def test_a_stored_failure_never_carries_candidate_data():
 async def test_result_returns_none_for_an_unknown_id():
     service = _service()
     assert await service.result("never-created") is None
+
+
+@pytest.mark.asyncio
+async def test_start_publishes_the_job_for_a_worker():
+    """The work leaves the web process entirely. Nothing in the API holds it, so
+    the app can scale to zero while a screening is still outstanding."""
+    from app.adapters.job_queue_memory import InMemoryJobQueue
+
+    queue = InMemoryJobQueue()
+    store = InMemoryJobStore()
+    service = ScreenService(
+        guardrail=FakeGuardrail(ScrubResult(clean_text="clean")),
+        llm=FakeLLM(
+            Assessment(
+                fit_score=4, rationale="ok", evidence=["x"], next_step=NextStep.ADVANCE
+            )
+        ),
+        job_store=store,
+        job_queue=queue,
+    )
+
+    job_id = await service.start(_REQ)
+
+    message = await queue.receive()
+    assert message is not None
+    assert message.job_id == job_id
+    assert message.request.transcript == _REQ.transcript

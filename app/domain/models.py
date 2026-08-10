@@ -4,16 +4,28 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+# Derived from the detector's context window. It is served with
+# --max-model-len 8192, covering the instructions, the transcript and the quotes
+# the model emits back. Reserving roughly 1,200 tokens for instructions and
+# output leaves ~7,000 for the transcript, at a conservative 3.5 characters per
+# token. Raise this only alongside --max-model-len in infra/gemma/vllm-app.yaml.
+MAX_TRANSCRIPT_CHARS = 24_000
+
 
 class ScreenRequest(BaseModel):
     """The request body for a screening.
 
     Attributes:
-        transcript: Candidate interview transcript. Untrusted input.
+        transcript: Candidate interview transcript. Untrusted input, capped at
+            what the detector's context window can process.
         job_description: The role being screened for.
     """
 
-    transcript: str = Field(min_length=1, description="Candidate interview transcript.")
+    transcript: str = Field(
+        min_length=1,
+        max_length=MAX_TRANSCRIPT_CHARS,
+        description="Candidate interview transcript.",
+    )
     job_description: str = Field(
         min_length=1, description="The role being screened for."
     )

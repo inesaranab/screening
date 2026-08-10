@@ -18,8 +18,8 @@ producing its result are separate operations:
 ``run`` is called by whichever process performs the work; the service does not
 depend on which.
 
-Collaborators are declared as ports (``Guardrail``, ``LLMClient``,
-``JobStore``), so this module depends on no vendor or transport.
+Collaborators are declared as ports (``Guardrail``, ``LLMClient``, ``JobStore``,
+``JobQueue``), so this module depends on no vendor or transport.
 """
 
 import logging
@@ -34,6 +34,7 @@ from app.domain.models import (
     ScreenResult,
 )
 from app.ports.guardrail import Guardrail
+from app.ports.job_queue import JobQueue
 from app.ports.job_store import JobStore
 from app.ports.llm import LLMClient
 
@@ -44,7 +45,11 @@ class ScreenService:
     """Orchestrates one screening request across the guardrail and LLM ports."""
 
     def __init__(
-        self, guardrail: Guardrail, llm: LLMClient, job_store: JobStore
+        self,
+        guardrail: Guardrail,
+        llm: LLMClient,
+        job_store: JobStore,
+        job_queue: JobQueue,
     ) -> None:
         """Initialise the service with its collaborators.
 
@@ -52,16 +57,20 @@ class ScreenService:
             guardrail: Redacts a transcript and reports what it found.
             llm: Produces an Assessment from a scrubbed transcript.
             job_store: Persists a job between acceptance and completion.
+            job_queue: Carries accepted work to whoever performs it.
         """
         self._guardrail = guardrail
         self._llm = llm
         self._jobs = job_store
+        self._queue = job_queue
 
     async def start(self, request: ScreenRequest) -> str:
-        """Record a screening as pending and return its id.
+        """Record a screening as pending, publish it, and return its id.
 
-        Performs no screening. The transcript is not read, the guardrail and
-        model are not called.
+        Performs no screening. The guardrail and model are not called.
+
+        The job is recorded before it is published, so a worker can never
+        receive an id that has no corresponding job.
 
         Args:
             request: The transcript and job description to assess.
@@ -71,6 +80,7 @@ class ScreenService:
         """
         job_id = uuid.uuid4().hex
         await self._jobs.create(job_id)
+        await self._queue.enqueue(job_id, request)
         return job_id
 
     async def run(self, job_id: str, request: ScreenRequest) -> None:
