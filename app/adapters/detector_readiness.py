@@ -5,9 +5,12 @@ ingress closes any single request long before that, so readiness is established
 by repeating a short request rather than by holding one open.
 """
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
+
+logger = logging.getLogger("screen")
 
 
 class HttpClientLike(Protocol):
@@ -62,17 +65,28 @@ async def wait_until_ready(
         True if the detector became ready, False if the deadline passed first.
     """
     started = now()
+    attempt = 0
     while True:
+        attempt += 1
+        reason = "not_serving"
         try:
             ready = await probe()
-        except Exception:  # noqa: BLE001 - any failure means "not ready yet"
+        except Exception as exc:  # noqa: BLE001 - any failure means "not ready yet"
             # The probe is supplied by the caller, so the ways it can fail are
             # not knowable here. A detector that has not started refuses the
             # connection, which is the expected state while it loads rather
             # than a failure to report.
             ready = False
+            reason = type(exc).__name__
+        waited = round(now() - started)
+        context = {"attempt": attempt, "waited_s": waited}
         if ready:
+            logger.info("detector_ready", extra={"context": context})
             return True
-        if now() - started + interval_s > deadline_s:
+        logger.info(
+            "detector_not_ready_yet", extra={"context": {**context, "reason": reason}}
+        )
+        if waited + interval_s > deadline_s:
+            logger.error("detector_never_ready", extra={"context": context})
             return False
         await sleep(interval_s)

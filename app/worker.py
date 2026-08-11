@@ -41,7 +41,18 @@ MAX_DELIVERIES = 3
 # happen between requests, never inside one.
 DETECTOR_READY_DEADLINE_S = 900.0
 DETECTOR_PROBE_INTERVAL_S = 15.0
-DETECTOR_PROBE_TIMEOUT_S = 30.0
+
+# A probe is an ordinary request, so ingress severs it at 240 seconds like any
+# other. It is set well above a healthy endpoint's response time because the
+# platform holds the request open while it starts a replica for an app scaled to
+# zero: a probe that gives up in seconds can abandon that start before a replica
+# exists, and the endpoint is then never reached however often it is retried.
+DETECTOR_PROBE_TIMEOUT_S = 180.0
+
+# How long the queue hides a message it has handed out. Everything one job can
+# wait for has to fit inside it, or the message is redelivered while the
+# execution holding it is still working.
+VISIBILITY_TIMEOUT_S = 1800.0
 
 
 async def drain(

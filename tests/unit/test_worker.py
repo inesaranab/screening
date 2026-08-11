@@ -154,3 +154,27 @@ async def test_a_job_is_not_screened_while_the_detector_is_unreachable():
     job = await store.get(job_id)
     assert job is not None
     assert job.status is JobStatus.FAILED
+
+
+def test_the_per_job_budget_fits_inside_one_delivery():
+    """Everything one job can wait for has to fit inside the window the queue
+    hides its message for. Beyond that the message reappears while the
+    execution holding it is still running, and the job is done twice."""
+    from app.config import settings
+    from app.worker import (
+        DETECTOR_PROBE_TIMEOUT_S,
+        DETECTOR_READY_DEADLINE_S,
+        VISIBILITY_TIMEOUT_S,
+    )
+
+    budget = (
+        DETECTOR_READY_DEADLINE_S
+        + settings.llm_guardrail_timeout_s
+        + settings.llm_timeout_s
+    )
+    assert budget < VISIBILITY_TIMEOUT_S
+
+    # A probe is one request, so it is subject to the same ingress limit as any
+    # other. Long enough for the platform to begin starting a replica, short
+    # enough that the platform does not sever it first.
+    assert 60 < DETECTOR_PROBE_TIMEOUT_S < 240

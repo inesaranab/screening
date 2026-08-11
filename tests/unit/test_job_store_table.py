@@ -73,6 +73,16 @@ def test_the_result_is_stored_as_one_json_column():
     assert json.loads(entity["result"])["assessment"]["fit_score"] == 4
 
 
+class _Entity(dict):
+    """Stands in for ``azure.data.tables.TableEntity``.
+
+    The etag lives in ``metadata``, not among the properties, so a plain dict
+    would let the adapter appear to read one that is not there.
+    """
+
+    metadata: dict
+
+
 class _FakeTableClient:
     """Records what the adapter sends, and answers reads from that record.
 
@@ -82,13 +92,14 @@ class _FakeTableClient:
 
     def __init__(self) -> None:
         self.entities: dict[str, dict] = {}
+        self.etags: dict[str, str] = {}
         self._version = 0
         self.on_read: Callable[[], Awaitable[None]] | None = None
 
     def _stamp(self, row_key: str) -> None:
         """Give the row a new etag, as any write to it does."""
         self._version += 1
-        self.entities[row_key]["etag"] = f"W/\"{self._version}\""
+        self.etags[row_key] = f'W/"{self._version}"'
 
     async def upsert_entity(self, entity: dict, **kwargs) -> None:
         """Merge into the stored row, as UpdateMode.MERGE does.
@@ -113,7 +124,7 @@ class _FakeTableClient:
             from azure.core.exceptions import ResourceNotFoundError
 
             raise ResourceNotFoundError("no such entity")
-        if kwargs.get("etag") is not None and kwargs["etag"] != stored.get("etag"):
+        if kwargs.get("etag") != self.etags.get(row_key):
             raise ResourceModifiedError("etag mismatch")
         stored.update(entity)
         self._stamp(row_key)
@@ -123,7 +134,8 @@ class _FakeTableClient:
 
         if row_key not in self.entities:
             raise ResourceNotFoundError("no such entity")
-        entity = dict(self.entities[row_key])
+        entity = _Entity(self.entities[row_key])
+        entity.metadata = {"etag": self.etags.get(row_key)}
         if self.on_read is not None:
             # Lets a test interleave another writer between a read and the
             # write that depends on it.

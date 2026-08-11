@@ -171,10 +171,15 @@ class AzureTableJobStore:
         refused rather than to replace the result.
         """
         try:
-            entity = dict(await self._table.get_entity(job_id, job_id))
+            entity = await self._table.get_entity(job_id, job_id)
         except ResourceNotFoundError:
             return False
-        if entity.get("status") != JobStatus.PENDING.value:
+        if dict(entity).get("status") != JobStatus.PENDING.value:
+            return False
+        # The etag is metadata on the entity, not one of its properties, so it
+        # does not survive being copied into a plain dict.
+        etag = getattr(entity, "metadata", {}).get("etag")
+        if etag is None:
             return False
         try:
             await self._table.update_entity(
@@ -186,7 +191,7 @@ class AzureTableJobStore:
                     "error": error,
                 },
                 mode=UpdateMode.MERGE,
-                etag=entity.get("etag"),
+                etag=etag,
                 match_condition=MatchConditions.IfNotModified,
             )
         except ResourceModifiedError:
