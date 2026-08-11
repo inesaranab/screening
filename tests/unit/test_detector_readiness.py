@@ -124,3 +124,37 @@ async def test_time_spent_probing_counts_against_the_deadline():
     assert not ready
     assert clock["t"] <= 100 + 30
     assert probes <= 3
+
+
+@pytest.mark.asyncio
+async def test_each_attempt_is_logged():
+    """A silent wait cannot be told apart from a hung one. Each attempt is
+    recorded so the logs show whether the endpoint is being reached at all."""
+    import logging
+
+    events: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            events.append(record.getMessage())
+
+    handler = _Collect()
+    logger = logging.getLogger("screen")
+    logger.addHandler(handler)
+    previous = logger.level
+    logger.setLevel(logging.INFO)
+    answers = iter([False, True])
+
+    async def probe() -> bool:
+        return next(answers)
+
+    try:
+        await wait_until_ready(
+            probe, deadline_s=60, interval_s=5, sleep=_no_sleep, now=lambda: 0.0
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+
+    assert "detector_not_ready_yet" in events
+    assert "detector_ready" in events
