@@ -70,17 +70,28 @@ class ScreenService:
         Performs no screening. The guardrail and model are not called.
 
         The job is recorded before it is published, so a worker can never
-        receive an id that has no corresponding job.
+        receive an id that has no corresponding job. A job that cannot be
+        published is marked failed rather than left pending, so no record
+        claims to be waiting on work that was never handed to anyone.
 
         Args:
             request: The transcript and job description to assess.
 
         Returns:
             The job id, to be passed to ``result``.
+
+        Raises:
+            Exception: Whatever publishing raised, after the job is marked
+                failed.
         """
         job_id = uuid.uuid4().hex
         await self._jobs.create(job_id)
-        await self._queue.enqueue(job_id, request)
+        try:
+            await self._queue.enqueue(job_id, request)
+        except Exception as exc:
+            logger.exception("enqueue_failed", extra={"context": {"job": job_id}})
+            await self._jobs.fail(job_id, type(exc).__name__)
+            raise
         return job_id
 
     async def run(self, job_id: str, request: ScreenRequest) -> None:

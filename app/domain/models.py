@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field
 # token. Raise this only alongside --max-model-len in infra/gemma/vllm-app.yaml.
 MAX_TRANSCRIPT_CHARS = 24_000
 
+# Derived from the 64 KiB ceiling on a queue message, which carries the job
+# description alongside the transcript. An uncapped field turns an oversized
+# posting into a transport error raised after the job is recorded, rather than a
+# validation error naming the field.
+MAX_JOB_DESCRIPTION_CHARS = 8_000
+
 
 class ScreenRequest(BaseModel):
     """The request body for a screening.
@@ -18,7 +24,8 @@ class ScreenRequest(BaseModel):
     Attributes:
         transcript: Candidate interview transcript. Untrusted input, capped at
             what the detector's context window can process.
-        job_description: The role being screened for.
+        job_description: The role being screened for, capped at what fits in a
+            queue message alongside the transcript.
     """
 
     transcript: str = Field(
@@ -27,7 +34,9 @@ class ScreenRequest(BaseModel):
         description="Candidate interview transcript.",
     )
     job_description: str = Field(
-        min_length=1, description="The role being screened for."
+        min_length=1,
+        max_length=MAX_JOB_DESCRIPTION_CHARS,
+        description="The role being screened for.",
     )
 
 

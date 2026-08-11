@@ -35,9 +35,19 @@ def encode_message(job_id: str, request: ScreenRequest) -> str:
         request: The transcript and job description to screen.
 
     Returns:
-        A JSON string carrying both.
+        A JSON string carrying both. Non-ASCII characters are left as
+        themselves rather than escaped, so the encoded size tracks the text's
+        UTF-8 size instead of doubling it.
+
+    Note:
+        A queue message holds 64 KiB. The field length caps bound the result to
+        that only for text whose characters are at most two UTF-8 bytes, which
+        covers Latin scripts. Scripts needing three bytes per character can
+        exceed it at the maximum permitted lengths.
     """
-    return json.dumps({"job_id": job_id, "request": request.model_dump()})
+    return json.dumps(
+        {"job_id": job_id, "request": request.model_dump()}, ensure_ascii=False
+    )
 
 
 def decode_message(content: str) -> tuple[str, ScreenRequest]:

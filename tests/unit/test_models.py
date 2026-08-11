@@ -46,3 +46,17 @@ def test_a_transcript_at_the_limit_is_accepted():
     )
 
     assert len(request.transcript) == MAX_TRANSCRIPT_CHARS
+
+
+def test_an_oversized_job_description_is_rejected():
+    """The job description shares a queue message with the transcript, and the
+    queue rejects a message over 64 KiB. An uncapped field lets that rejection
+    happen after the job row is written, so the caller gets a 500 rather than a
+    422 naming the field."""
+    from app.domain.models import MAX_JOB_DESCRIPTION_CHARS
+
+    with pytest.raises(ValidationError):
+        ScreenRequest(
+            transcript="5y Python",
+            job_description="x" * (MAX_JOB_DESCRIPTION_CHARS + 1),
+        )

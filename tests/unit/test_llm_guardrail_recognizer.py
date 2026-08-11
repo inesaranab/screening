@@ -133,6 +133,15 @@ def test_grows_a_hit_that_ends_inside_the_same_word(recognizer, monkeypatch):
     assert [(r.start, r.end) for r in results] == [(4, 11)]
 
 
+def test_a_detector_call_is_attempted_only_once(recognizer):
+    """The endpoint timeout is sized for a GPU starting from zero, so each extra
+    attempt adds another full timeout. Transport-level retries multiply that
+    wait past the worker's replica timeout, and a worker killed mid-attempt
+    records no outcome: the job stays pending and its message is redelivered to
+    fail the same way."""
+    assert recognizer._client.client.max_retries == 0
+
+
 def test_makes_no_call_when_no_supported_entity_is_requested(recognizer):
     # No stub: a real call would try to reach the endpoint and fail, so passing
     # proves we short-circuit before touching the network.

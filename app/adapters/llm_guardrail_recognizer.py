@@ -114,6 +114,10 @@ class LLMGuardrailRecognizer(EntityRecognizer):
                 base_url=settings.llm_guardrail_base_url,
                 api_key="not-used-by-vllm",  # stub: the SDK requires one, vLLM ignores it
                 timeout=settings.llm_guardrail_timeout_s,
+                # One attempt, so the worst-case wait is one timeout rather than
+                # a multiple of it. The timeout already covers a GPU starting
+                # from zero; retrying on top of it outlasts the caller.
+                max_retries=0,
             ),
             mode=instructor.Mode.JSON_SCHEMA,
         )

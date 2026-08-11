@@ -33,6 +33,16 @@ def test_a_maximum_transcript_still_fits_a_queue_message():
     assert len(encode_message("abc123", biggest).encode("utf-8")) < _QUEUE_LIMIT_BYTES
 
 
+def test_a_non_ascii_transcript_fits_a_queue_message():
+    """Escaping a non-ASCII character into its \\uXXXX form costs six bytes
+    where the character itself costs three, so an escaped transcript can pass
+    the queue's size limit while its character count is still well inside the
+    cap. Encoding must stay proportional to the text's own size."""
+    request = ScreenRequest(transcript="漢" * 12_000, job_description="Backend")
+
+    assert len(encode_message("abc123", request).encode("utf-8")) < _QUEUE_LIMIT_BYTES
+
+
 class _FakeQueueClient:
     """Stands in for ``azure.storage.queue.aio.QueueClient``."""
 

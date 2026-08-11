@@ -46,6 +46,33 @@ async def test_start_records_a_pending_job_and_does_no_work():
 
 
 @pytest.mark.asyncio
+async def test_start_marks_the_job_failed_when_publishing_it_does_not():
+    """A job nobody can perform must not be left claiming to be pending."""
+
+    class BrokenQueue:
+        """Records the id it was asked to publish, then refuses to publish."""
+
+        def __init__(self) -> None:
+            self.job_id = ""
+
+        async def enqueue(self, job_id: str, request: ScreenRequest) -> None:
+            self.job_id = job_id
+            raise ConnectionError("queue unreachable")
+
+    store = InMemoryJobStore()
+    queue = BrokenQueue()
+    service = _service(store=store, queue=queue)
+
+    with pytest.raises(ConnectionError):
+        await service.start(_REQ)
+
+    job = await store.get(queue.job_id)
+    assert job is not None
+    assert job.status is JobStatus.FAILED
+    assert job.error == "ConnectionError"
+
+
+@pytest.mark.asyncio
 async def test_run_stores_the_assessment():
     store = InMemoryJobStore()
     service = _service(store=store)
