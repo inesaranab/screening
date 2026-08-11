@@ -78,17 +78,46 @@ def test_a_request_whose_encoded_bytes_exceed_the_queue_limit_is_rejected():
 
 def test_a_request_at_the_byte_limit_is_accepted():
     """The limit is a byte count, so the boundary case needs multi-byte text --
-    the character caps alone cannot reach it with ASCII."""
-    from app.domain.models import MAX_REQUEST_BYTES, MAX_TRANSCRIPT_CHARS
+    the character caps alone cannot reach it with ASCII. The count is of the
+    text as a JSON string, so the two enclosing quotes per field count too."""
+    from app.domain.models import (
+        MAX_REQUEST_BYTES,
+        MAX_TRANSCRIPT_CHARS,
+        _json_string_bytes,
+    )
 
     two_byte = "é"
     assert len(two_byte.encode()) == 2
-    remaining = (MAX_REQUEST_BYTES - MAX_TRANSCRIPT_CHARS * 2) // 2
+    quotes = 2 * 2
+    remaining = (MAX_REQUEST_BYTES - quotes - MAX_TRANSCRIPT_CHARS * 2) // 2
 
     request = ScreenRequest(
         transcript=two_byte * MAX_TRANSCRIPT_CHARS,
         job_description=two_byte * remaining,
     )
 
-    encoded = len(request.transcript.encode()) + len(request.job_description.encode())
+    encoded = _json_string_bytes(request.transcript) + _json_string_bytes(
+        request.job_description
+    )
     assert encoded == MAX_REQUEST_BYTES
+
+
+def test_a_request_whose_escaped_size_exceeds_the_queue_limit_is_rejected():
+    """A queue message carries the two fields as JSON strings, and JSON expands
+    a control character to six characters. Counting raw bytes therefore lets a
+    request through that cannot be published, and the rejection then lands in
+    transport, after the job row exists."""
+    from app.adapters.job_queue_azure import encode_message
+    from app.domain.models import MAX_TRANSCRIPT_CHARS
+
+    oversized = ScreenRequest.model_construct(
+        transcript="\x01" * MAX_TRANSCRIPT_CHARS, job_description="Backend"
+    )
+    assert len(encode_message("a" * 32, oversized).encode()) > 64 * 1024
+
+    with pytest.raises(ValidationError) as exc:
+        ScreenRequest(
+            transcript="\x01" * MAX_TRANSCRIPT_CHARS, job_description="Backend"
+        )
+
+    assert "MAX_REQUEST_BYTES" in str(exc.value)

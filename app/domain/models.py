@@ -1,5 +1,6 @@
 """The contract for /screen — the Pydantic types every layer depends on."""
 
+import json
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Self
@@ -22,7 +23,8 @@ MAX_JOB_DESCRIPTION_CHARS = 8_000
 # Derived from the 64 KiB ceiling on a queue message, less headroom for the job
 # id and the JSON that wraps both fields. The character caps above bound length;
 # this bounds size, which is what the ceiling is actually expressed in. A
-# character can occupy up to four UTF-8 bytes, so the two are not equivalent.
+# character can occupy up to four UTF-8 bytes, and a JSON string expands a
+# control character to six, so neither cap implies the other.
 MAX_REQUEST_BYTES = 60_000
 
 # How long a job may stay PENDING before it is treated as never going to finish.
@@ -31,6 +33,20 @@ MAX_REQUEST_BYTES = 60_000
 # otherwise move it out of PENDING. Must exceed the queue's message lifetime plus
 # one screening; below that, work still in progress would be declared dead.
 JOB_DEADLINE_SECONDS = 5 * 60 * 60
+
+
+def _json_string_bytes(value: str) -> int:
+    """Measure a string as it occupies space inside a JSON document.
+
+    Args:
+        value: The text to measure.
+
+    Returns:
+        The UTF-8 byte length of the text escaped as a JSON string, quotes
+        included. Non-ASCII characters are left as themselves, matching how the
+        request is published.
+    """
+    return len(json.dumps(value, ensure_ascii=False).encode())
 
 
 class ScreenRequest(BaseModel):
@@ -58,14 +74,21 @@ class ScreenRequest(BaseModel):
     def _fits_in_a_queue_message(self) -> Self:
         """Reject a request too large to publish.
 
+        Both fields travel as JSON strings, so the size that counts is the
+        escaped one: a control character occupies one byte in the field and six
+        in the message. Measuring the field alone would pass a request that the
+        transport then rejects, once the job has already been recorded.
+
         Returns:
             The request, unchanged.
 
         Raises:
             ValueError: If the two fields together exceed MAX_REQUEST_BYTES
-                once encoded as UTF-8.
+                once escaped as JSON strings and encoded as UTF-8.
         """
-        size = len(self.transcript.encode()) + len(self.job_description.encode())
+        size = _json_string_bytes(self.transcript) + _json_string_bytes(
+            self.job_description
+        )
         if size > MAX_REQUEST_BYTES:
             raise ValueError(
                 f"encoded request is {size} bytes, over the "

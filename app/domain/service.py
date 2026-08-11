@@ -107,10 +107,18 @@ class ScreenService:
         For work that cannot be completed however many times it is tried, where
         another attempt would repeat the failure rather than resolve it.
 
+        Only a job still PENDING is settled. Work is given up on because it was
+        delivered too often, and a job can be delivered again after its outcome
+        was recorded, so a job already carrying an answer keeps it.
+
         Args:
             job_id: The id returned by ``start``.
             reason: Why the job was given up on. Must not quote the transcript.
         """
+        settled = await self._jobs.get(job_id)
+        if settled is not None and settled.status is not JobStatus.PENDING:
+            logger.info("job_abandon_skipped", extra={"context": {"job": job_id}})
+            return
         logger.warning("job_abandoned", extra={"context": {"job": job_id}})
         await self._jobs.fail(job_id, reason)
 
