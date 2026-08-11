@@ -380,6 +380,12 @@ message redelivered more than three times is recorded as failed and deleted with
 retried — otherwise a transcript that crashes every worker would cycle on the queue for as
 long as the queue would hold it.
 
+That expiry creates its own hole, which the job store has to close: a message can vanish
+without any worker having touched it, leaving a row that says `pending` and a `GET` that
+answers 202 forever. So a job still pending five hours after it was accepted is settled as
+failed when it is next read. Resolving it **on read** rather than on a schedule means the
+answer is correct without a background process having to be alive for it to be correct.
+
 ```text
                  ┌───────────────────────────────────────────────────────────────┐
                  │  managed environment  (Sweden Central)                        │

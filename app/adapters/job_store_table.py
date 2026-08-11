@@ -7,6 +7,7 @@ Authentication is by managed identity; no storage key is read or configured.
 """
 
 import json
+from datetime import datetime
 from typing import Protocol
 
 from azure.core.exceptions import ResourceNotFoundError
@@ -48,6 +49,7 @@ def job_to_entity(job: Job) -> dict:
         "status": job.status.value,
         "result": job.result.model_dump_json() if job.result is not None else "",
         "error": job.error or "",
+        "created_at": job.created_at.isoformat(),
     }
 
 
@@ -66,12 +68,19 @@ def entity_to_job(entity: dict) -> Job:
     """
     raw_result = entity.get("result") or ""
     raw_error = entity.get("error") or ""
-    return Job(
-        id=entity["RowKey"],
-        status=JobStatus(entity["status"]),
-        result=ScreenResult(**json.loads(raw_result)) if raw_result else None,
-        error=raw_error or None,
-    )
+    raw_created = entity.get("created_at") or ""
+    fields: dict = {
+        "id": entity["RowKey"],
+        "status": JobStatus(entity["status"]),
+        "result": ScreenResult(**json.loads(raw_result)) if raw_result else None,
+        "error": raw_error or None,
+    }
+    # Omitted rather than defaulted when absent: a row written before this
+    # column existed has no accepted-at time, and inventing "now" for it would
+    # keep restarting its deadline on every read.
+    if raw_created:
+        fields["created_at"] = datetime.fromisoformat(raw_created)
+    return Job(**fields)
 
 
 class AzureTableJobStore:

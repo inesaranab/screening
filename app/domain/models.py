@@ -1,5 +1,6 @@
 """The contract for /screen — the Pydantic types every layer depends on."""
 
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Self
 
@@ -23,6 +24,13 @@ MAX_JOB_DESCRIPTION_CHARS = 8_000
 # this bounds size, which is what the ceiling is actually expressed in. A
 # character can occupy up to four UTF-8 bytes, so the two are not equivalent.
 MAX_REQUEST_BYTES = 60_000
+
+# How long a job may stay PENDING before it is treated as never going to finish.
+# The queue that carries the work expires messages, so a job can stop being any
+# worker's responsibility without a worker having touched it, and nothing would
+# otherwise move it out of PENDING. Must exceed the queue's message lifetime plus
+# one screening; below that, work still in progress would be declared dead.
+JOB_DEADLINE_SECONDS = 5 * 60 * 60
 
 
 class ScreenRequest(BaseModel):
@@ -183,9 +191,15 @@ class Job(BaseModel):
         status: Where the job is in its life.
         result: The completed screening. Set when status is DONE.
         error: Why the screening failed. Set when status is FAILED.
+        created_at: When the job was accepted. Establishes whether a job still
+            pending is outstanding or abandoned.
     """
 
     id: str = Field(min_length=1, description="Opaque handle the caller polls with.")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="When the job was accepted.",
+    )
     status: JobStatus = JobStatus.PENDING
     result: ScreenResult | None = Field(
         default=None, description="The completed screening. Set when status is DONE."

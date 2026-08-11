@@ -12,10 +12,18 @@ Authentication is by managed identity; no storage key is read or configured.
 """
 
 import json
+import logging
 from typing import Any, Protocol
 
 from app.domain.models import ScreenRequest
 from app.ports.job_queue import QueuedJob
+
+logger = logging.getLogger("screen")
+
+# How many undecodable messages one receive may discard before giving up. A
+# bound rather than an unbounded loop, so a queue full of unreadable messages
+# ends the attempt instead of occupying a worker indefinitely.
+MAX_DISCARDS = 10
 
 # How long a published message may remain readable. The message carries the
 # unredacted transcript, so its lifetime is how long that text can exist outside
@@ -100,11 +108,22 @@ class AzureJobQueue:
         )
 
     async def receive(self) -> QueuedJob | None:
-        """Take the next job, or None. See ``JobQueue.receive``."""
-        async for message in self._client.receive_messages(
-            messages_per_page=1, visibility_timeout=self._visibility_timeout
-        ):
-            job_id, request = decode_message(message.content)
+        """Take the next job, or None. See ``JobQueue.receive``.
+
+        A message that cannot be decoded is deleted rather than returned or
+        raised. Raising would leave it undeleted, so it would become visible
+        again and stop the next worker in the same way; no number of retries
+        makes an unreadable message readable.
+        """
+        for _ in range(MAX_DISCARDS + 1):
+            message = await self._next_message()
+            if message is None:
+                return None
+            try:
+                job_id, request = decode_message(message.content)
+            except ValueError, KeyError, TypeError:
+                await self._discard(message)
+                continue
             return QueuedJob(
                 job_id=job_id,
                 request=request,
@@ -112,6 +131,34 @@ class AzureJobQueue:
                 delivery_count=getattr(message, "dequeue_count", 1) or 1,
             )
         return None
+
+    async def _next_message(self) -> Any | None:
+        """Return the next raw message on the queue, or None if there is none."""
+        async for message in self._client.receive_messages(
+            messages_per_page=1, visibility_timeout=self._visibility_timeout
+        ):
+            return message
+        return None
+
+    async def _discard(self, message: Any) -> None:
+        """Delete a message that cannot be decoded.
+
+        The body is not logged. It holds the unredacted transcript, and the log
+        is neither scrubbed nor access-controlled the way the job store is.
+
+        Args:
+            message: The raw message to delete.
+        """
+        logger.error(
+            "queue_message_undecodable",
+            extra={
+                "context": {
+                    "message": getattr(message, "id", None),
+                    "deliveries": getattr(message, "dequeue_count", None),
+                }
+            },
+        )
+        await self._client.delete_message(message)
 
     async def delete(self, job: QueuedJob) -> None:
         """Remove a processed message. See ``JobQueue.delete``."""

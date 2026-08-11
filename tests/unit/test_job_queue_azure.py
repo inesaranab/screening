@@ -57,18 +57,22 @@ class _FakeQueueClient:
         self.send_kwargs.append(kwargs)
 
     def receive_messages(self, **kwargs):
+        """Yield the queued messages, consuming them.
+
+        A received message is hidden from later receives in Azure, so a double
+        that kept re-yielding the same one would let a discard loop appear to
+        make progress while standing still.
+        """
         messages = self._messages
 
         class _Iter:
             def __aiter__(self):
-                self._i = iter(messages)
                 return self
 
             async def __anext__(self):
-                try:
-                    return next(self._i)
-                except StopIteration:
+                if not messages:
                     raise StopAsyncIteration
+                return messages.pop(0)
 
         return _Iter()
 
@@ -136,3 +140,46 @@ async def test_receive_reports_how_many_times_the_message_was_delivered():
 
     assert job is not None
     assert job.delivery_count == 4
+
+
+@pytest.mark.asyncio
+async def test_a_message_that_cannot_be_decoded_is_discarded_not_raised():
+    """A message the adapter cannot read would otherwise propagate out of the
+    worker loop before anything deletes it, so the same message reappears and
+    stops the next worker too. Discarding it is what breaks that cycle."""
+    client = _FakeQueueClient(
+        [
+            _Message("{not json"),
+            _Message(encode_message("abc123", _REQ)),
+        ]
+    )
+
+    job = await AzureJobQueue(client).receive()
+
+    assert job is not None
+    assert job.job_id == "abc123"
+    assert len(client.deleted) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_message_failing_validation_is_discarded():
+    """Encoding is not the only way a message goes bad: a request that was
+    valid when published can fail today's validation after the contract
+    tightens."""
+    client = _FakeQueueClient([_Message(json.dumps({"job_id": "x", "request": {}}))])
+
+    assert await AzureJobQueue(client).receive() is None
+    assert len(client.deleted) == 1
+
+
+@pytest.mark.asyncio
+async def test_discarding_a_message_does_not_log_its_content(caplog):
+    """The message body is an unredacted transcript. It must not reach the
+    logs, which are neither scrubbed nor access-controlled like the store."""
+    secret = "I am a Quaker and my NINO is QQ123456C"
+    client = _FakeQueueClient([_Message(json.dumps({"job_id": secret}))])
+
+    with caplog.at_level("ERROR"):
+        await AzureJobQueue(client).receive()
+
+    assert secret not in caplog.text

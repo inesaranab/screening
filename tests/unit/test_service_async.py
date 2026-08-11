@@ -164,3 +164,59 @@ async def test_start_publishes_the_job_for_a_worker():
     assert message is not None
     assert message.job_id == job_id
     assert message.request.transcript == _REQ.transcript
+
+
+@pytest.mark.asyncio
+async def test_a_job_pending_past_its_deadline_is_reported_as_failed():
+    """A queue message expires, so a job can stop being anyone's work without
+    any worker touching it. Left pending it would answer 202 forever, and a
+    poller has no other way to learn the answer is never coming."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.models import JOB_DEADLINE_SECONDS
+
+    store = InMemoryJobStore()
+    service = _service(store=store)
+    job_id = await service.start(_REQ)
+
+    stale = datetime.now(UTC) - timedelta(seconds=JOB_DEADLINE_SECONDS + 1)
+    store._jobs[job_id] = store._jobs[job_id].model_copy(update={"created_at": stale})
+
+    job = await service.result(job_id)
+
+    assert job is not None
+    assert job.status is JobStatus.FAILED
+    assert job.error == "Expired"
+
+
+@pytest.mark.asyncio
+async def test_a_job_pending_inside_its_deadline_is_still_pending():
+    store = InMemoryJobStore()
+    service = _service(store=store)
+    job_id = await service.start(_REQ)
+
+    job = await service.result(job_id)
+
+    assert job is not None
+    assert job.status is JobStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_expiry_does_not_overwrite_a_finished_job():
+    """A job that finished has an answer worth keeping however old it is."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.models import JOB_DEADLINE_SECONDS
+
+    store = InMemoryJobStore()
+    service = _service(store=store)
+    job_id = await service.start(_REQ)
+    await service.run(job_id, _REQ)
+
+    stale = datetime.now(UTC) - timedelta(seconds=JOB_DEADLINE_SECONDS + 1)
+    store._jobs[job_id] = store._jobs[job_id].model_copy(update={"created_at": stale})
+
+    job = await service.result(job_id)
+
+    assert job is not None
+    assert job.status is JobStatus.DONE

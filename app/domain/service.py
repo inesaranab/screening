@@ -24,11 +24,14 @@ Collaborators are declared as ports (``Guardrail``, ``LLMClient``, ``JobStore``,
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from app.domain.models import (
+    JOB_DEADLINE_SECONDS,
     Assessment,
     Flags,
     Job,
+    JobStatus,
     NextStep,
     ScreenRequest,
     ScreenResult,
@@ -136,12 +139,28 @@ class ScreenService:
     async def result(self, job_id: str) -> Job | None:
         """Return a job's current state.
 
+        A job still PENDING past JOB_DEADLINE_SECONDS is settled as failed
+        first. The queue expires the message carrying the work, so a job can
+        stop being any worker's responsibility without a worker having touched
+        it; nothing else would move it out of PENDING, and a caller polling it
+        would be told to wait indefinitely.
+
+        Settling on read rather than on a schedule keeps the answer correct
+        without a separate process having to be running for it to be correct.
+
         Args:
             job_id: The id returned by ``start``.
 
         Returns:
             The Job, or None if no job with that id exists.
         """
+        job = await self._jobs.get(job_id)
+        if job is None or job.status is not JobStatus.PENDING:
+            return job
+        age = (datetime.now(UTC) - job.created_at).total_seconds()
+        if age < JOB_DEADLINE_SECONDS:
+            return job
+        await self._jobs.fail(job_id, "Expired")
         return await self._jobs.get(job_id)
 
     async def screen(self, request: ScreenRequest) -> ScreenResult:
