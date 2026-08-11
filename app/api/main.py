@@ -7,18 +7,29 @@ Everything below this layer (domain, ports) stays vendor-free.
 
 import logging
 import secrets
-import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from instructor.core.exceptions import InstructorRetryException
-from openai import APIConnectionError, APITimeoutError
+from azure.core.exceptions import AzureError
+from azure.data.tables.aio import TableClient
+from azure.identity.aio import DefaultAzureCredential
+from azure.storage.queue.aio import QueueClient
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 
 from app.adapters.guard_classifier import ClassifierGuardrail
+from app.adapters.job_queue_azure import AzureJobQueue
+from app.adapters.job_store_table import AzureTableJobStore
 from app.adapters.llm_openai import OpenAICompatibleLLM
 from app.config import settings
-from app.domain.models import ScreenRequest, ScreenResult
+from app.domain.models import Job, JobStatus, ScreenRequest
 from app.domain.service import ScreenService
 from app.logging_config import setup_logging
 
@@ -27,13 +38,37 @@ logger = logging.getLogger("screen")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Build the expensive adapters once at startup, tear the LLM client down at exit.
+    """Build the adapters once at startup and release them at shutdown."""
     setup_logging()
     guardrail = ClassifierGuardrail()
     llm = OpenAICompatibleLLM()
-    app.state.service = ScreenService(guardrail=guardrail, llm=llm)
+
+    # Managed identity, so no storage key or connection string is configured.
+    # DefaultAzureCredential resolves to the container app's assigned identity
+    # in Azure and to the developer's az-cli login locally.
+    credential = DefaultAzureCredential()
+    table = TableClient(
+        endpoint=settings.jobs_account_url,
+        table_name=settings.jobs_table_name,
+        credential=credential,
+    )
+    queue = QueueClient(
+        account_url=settings.jobs_queue_url,
+        queue_name=settings.jobs_queue_name,
+        credential=credential,
+    )
+
+    app.state.service = ScreenService(
+        guardrail=guardrail,
+        llm=llm,
+        job_store=AzureTableJobStore(table),
+        job_queue=AzureJobQueue(queue),
+    )
     yield
     await llm.aclose()
+    await queue.close()
+    await table.close()
+    await credential.close()
 
 
 app = FastAPI(title="Screening /screen", lifespan=lifespan)
@@ -58,56 +93,63 @@ def get_service(request: Request) -> ScreenService:
     return request.app.state.service
 
 
-@app.post("/screen", response_model=ScreenResult)
+@app.post("/screen", status_code=status.HTTP_202_ACCEPTED, response_model=Job)
 async def screen(
     request: ScreenRequest,
     service: Annotated[ScreenService, Depends(get_service)],
     auth: Annotated[None, Depends(require_api_key)],
-) -> ScreenResult:
-    started = time.perf_counter()
+) -> Job:
+    """Accept a screening and hand back a handle to poll with.
+
+    The status is 202 because the result does not exist yet. The detector
+    scales to zero and takes minutes to wake, and Azure Container Apps closes
+    any request after 240 seconds, so a screening cannot be returned within the
+    request that submits it.
+
+    The screening is performed by a separate worker, so no work is held in the
+    web process and the app can scale to zero while a job is outstanding.
+
+    Returns:
+        The accepted job, pending, carrying the id to poll with.
+
+    Raises:
+        HTTPException: 503 if the job could not be recorded or published. The
+            storage account is unreachable, not the request malformed, so the
+            caller may retry the same body.
+    """
     try:
-        result = await service.screen(request)
-        logger.info(
-            "screen_ok",
-            extra={
-                "context": {
-                    "latency_ms": round((time.perf_counter() - started) * 1000),
-                    "fit_score": result.assessment.fit_score,
-                    "injection_detected": result.flags.injection_detected,
-                    "pii_redacted": result.flags.pii_redacted,
-                    "low_confidence": result.flags.low_confidence,
-                }
-            },
-        )
-        return result
-    except (APITimeoutError, APIConnectionError, InstructorRetryException) as exc:
-        # Instructor WRAPS the underlying openai error in InstructorRetryException,
-        # so we unwrap via __cause__ to map the real failure precisely.
-        cause = exc.__cause__ if isinstance(exc, InstructorRetryException) else exc
-        if isinstance(cause, APITimeoutError):
-            code, detail = (
-                status.HTTP_504_GATEWAY_TIMEOUT,
-                "The model timed out. Try again shortly.",
-            )
-        elif isinstance(cause, APIConnectionError):
-            code, detail = (
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "The model service is unavailable.",
-            )
-        else:
-            # Instructor exhausted retries on malformed/out-of-spec output.
-            code, detail = (
-                status.HTTP_502_BAD_GATEWAY,
-                "The model returned unusable output.",
-            )
-        raise HTTPException(status_code=code, detail=detail)
-    except Exception:
-        logger.exception("screen_failed")
-        # Fail closed with a generic message — never leak internals or candidate data.
+        job_id = await service.start(request)
+    except AzureError:
+        logger.exception("screen_submission_failed")
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The model returned unusable output.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not accept the screening. Try again shortly.",
+        ) from None
+    logger.info("screen_accepted", extra={"context": {"job": job_id}})
+    return Job(id=job_id)
+
+
+@app.get("/screen/{job_id}", response_model=Job)
+async def screen_result(
+    job_id: str,
+    response: Response,
+    service: Annotated[ScreenService, Depends(get_service)],
+    auth: Annotated[None, Depends(require_api_key)],
+) -> Job:
+    """Fetch a screening.
+
+    The HTTP status answers "is it ready"; the body answers "what happened".
+    A finished-but-failed job is 200, not an error: the read succeeded, and the
+    poller needs to see `status: failed` so it can stop rather than keep asking.
+    """
+    job = await service.result(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such job."
         )
+    if job.status is JobStatus.PENDING:
+        response.status_code = status.HTTP_202_ACCEPTED
+    return job
 
 
 @app.get("/health")

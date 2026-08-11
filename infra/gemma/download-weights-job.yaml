@@ -1,0 +1,71 @@
+## One-shot job that populates the model share.
+##
+## Runs on the CPU Consumption profile, not the GPU one -- this is a network
+## copy, and it would otherwise burn A100 minutes doing nothing but I/O.
+##
+## A template: the placeholders below are substituted before it is applied.
+##
+## Run it once. The weights then persist on the share across every scale-to-zero
+## cycle of the vLLM app, which is the point of putting them there rather than
+## in the image.
+##
+## Watching it run:
+##
+##   az containerapp job logs show -n download-weights -g screening-rg \
+##     --container downloader --tail 50
+##
+## The portal equivalent is: the job -> Execution history -> an execution ->
+## Console logs.
+##
+## Confirm bytes landed:
+##
+##   az storage file list --account-name screeningweights --share-name models \
+##     --path gemma-4-31b-it --account-key <key> -o table
+
+location: ${REGION}
+type: Microsoft.App/jobs
+properties:
+  environmentId: ${ENV_ID}
+  workloadProfileName: Consumption
+  configuration:
+    triggerType: Manual
+    ## Measured run: 7m37s. 2h is deliberate slack for a slow day, not an estimate.
+    replicaTimeout: 7200
+    replicaRetryLimit: 1
+    manualTriggerConfig:
+      parallelism: 1
+      replicaCompletionCount: 1
+  template:
+    containers:
+      - name: downloader
+        image: python:3.14-slim
+        command: ["/bin/sh", "-c"]
+        ## local_dir= makes the download put the real files on the share.
+        ## Without it, the real 62GB stays in a cache (~/.cache/huggingface) 
+        ## inside this container and the share gets only pointers to it -- and 
+        ## the container is deleted when the job ends, so the share would look
+        ## full but hold nothing.
+        ## revision= pins the commit. Without it the download follows the
+        ## repository's default branch, so re-running this job can place
+        ## different weights on the share than the ones that were evaluated.
+        args:
+          - >-
+            set -e;
+            pip install --no-cache-dir huggingface_hub==1.27.0;
+            HF_XET_HIGH_PERFORMANCE=1 python -c "from huggingface_hub import
+            snapshot_download; snapshot_download('${HF_REPO}',
+            revision='${HF_REVISION}',
+            local_dir='/models/${MODEL_DIR}', max_workers=8)"
+        resources:
+          cpu: 4.0
+          memory: 8Gi
+        volumeMounts:
+          - volumeName: models
+            mountPath: /models
+    volumes:
+      - name: models
+        storageType: AzureFile
+        ## The read-write mount of the same share. vllm-app.yaml deliberately
+        ## uses the read-only one: this job is the only thing that should ever
+        ## be able to modify the weights.
+        storageName: models-rw

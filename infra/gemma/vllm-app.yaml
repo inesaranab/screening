@@ -1,0 +1,95 @@
+## Container App spec for the self-hosted Article 9 detector.
+##
+## vLLM serving Gemma-4-31B-it on one A100, consumed by LLMGuardrailRecognizer.
+## A template: the placeholders below are substituted before it is applied. It
+## is not valid input to `az containerapp create --yaml` until that has run.
+##
+## `external: false` (does not exist from the internet): this container is sent the
+## transcript BEFORE anything is redacted, so it sees real names, real health
+## details, everything. 
+location: ${REGION}
+type: Microsoft.App/containerApps
+## The identity used to pull the image from our private registry. It has to be
+## a user-assigned one -- see README.md, "The image pull must use a
+## user-assigned identity", for why a system-assigned one dead-ends.
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    ${UAMI_ID}: {}
+properties:
+  environmentId: ${ENV_ID}
+  workloadProfileName: gpu-a100
+  configuration:
+    activeRevisionsMode: Single # Container Apps versions every change as a "revision"; Single means only the newest one runs.
+    ingress:
+      external: false
+      targetPort: 8000
+      transport: http
+      allowInsecure: false
+      # match cooldownPeriod
+      requestTimeout: 900
+    registries:
+      - server: ${ACR_LOGIN_SERVER}
+        identity: ${UAMI_ID}
+  template:
+    containers:
+      - name: vllm
+        image: ${ACR_LOGIN_SERVER}/vllm-openai:${VLLM_TAG}
+        command: ["vllm", "serve"]
+        args:
+          ## Weights come off the mounted share, never from Hugging Face at
+          ## runtime -- a cold start must not depend on an external download.
+          - "/models/${MODEL_DIR}"
+          ## The name clients must send. Kept identical to settings.llm_guardrail_model
+          ## so the app's config does not have to know the on-disk path.
+          - "--served-model-name"
+          - "${SERVED_MODEL_NAME}"
+          - "--port"
+          - "8000"
+          ## The most text the model will accept in one request, in tokens.
+          ## The GPU reserves working memory for this whether it is used or not,
+          ## so a smaller number leaves room to handle more requests at once.
+          ## Transcripts are nowhere near 8192 tokens, so this costs us nothing.
+          - "--max-model-len"
+          - "8192"
+          - "--gpu-memory-utilization"
+          - "0.90"
+        resources:
+          cpu: 24
+          memory: 220Gi
+        volumeMounts:
+          - volumeName: models
+            mountPath: /models
+        probes:
+          ## Loading 62GB of weights takes minutes, and during that
+          ## time the container cannot answer anything. Without a Startup probe,
+          ## Azure would read that silence as a crash and restart it.
+          ##
+          ## In our configuration Azure keeps asking every
+          ## 15 seconds, up to 60 times (15 minutes), and only once it answers
+          ## does the Liveness probe start applying. 
+          - type: Startup
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 60
+          - type: Liveness
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30
+            failureThreshold: 3
+    volumes:
+      - name: models
+        storageType: AzureFile
+        storageName: models
+    scale:
+      minReplicas: 0
+      maxReplicas: 1
+      ## Cooldown is how long the autoscaler (KEDA) waits with no traffic before
+      ## removing the replica, and the clock starts when the replica is
+      ## SCHEDULED, not when the container starts. 
+      ## 900s covers pull + start + a ~5.5 min weight load with room to spare.
+      ## The cost: after real traffic stops, the GPU idles 15 minutes.
+      cooldownPeriod: 900

@@ -1,35 +1,39 @@
 """Adapter: the guardrail, behind the `Guardrail` port.
 
-Locked design: Presidio for PII (the layered regex + NER standard), a small
-TRAINED classifier for injection (replaces hand-written regex that only caught
-exact phrasings).
+Three detectors, each doing what it is measurably best at.
 
     PII       -> Presidio, built-in multi-region recognizers (PhoneRecognizer
-                 covers US/UK/DE/FR/IL/IN/CA/BR — no UK-only regex), plus a
-                 custom DOB recognizer and a tech-term allow_list to curb
-                 over-redaction.
-    Injection -> protectai/deberta-v3-base-prompt-injection-v2 (Apache-2.0)
-                 a classifier that learned injection INTENT, so a reworded attack
-                 ("please set aside the earlier guidance...") is still caught.
+                 covers US/UK/DE/FR/IL/IN/CA/BR — no UK-only regex), plus
+                 custom DOB/NINO/postcode recognizers and a tech-term
+                 allow_list to curb over-redaction.
+    Article 9 -> LLMGuardrailRecognizer: a self-hosted Gemma-4-31B behind a
+                 vLLM endpoint. Replaced GLiNER on measured F1 — 0.786 average
+                 across the seven special categories against GLiNER's 0.552,
+                 and ahead of the frontier cloud model too (INE-16).
+    Injection -> protectai/deberta-v3-base-prompt-injection-v2 (Apache-2.0),
+                 a classifier that learned injection INTENT, so a reworded
+                 attack ("please set aside the earlier guidance...") is still
+                 caught.
 
-Both run locally — nothing leaves the machine.
+Presidio and the injection classifier run in-process. Article 9 detection is an
+HTTP call to a self-hosted endpoint: still our own infrastructure, so raw
+transcripts never reach a third party, but no longer strictly in-process — and
+the service now depends on that endpoint being up.
 """
 
 from functools import cache
 
 from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
 from presidio_analyzer.nlp_engine import NlpEngineProvider
-from presidio_analyzer.predefined_recognizers import GLiNERRecognizer
 from presidio_anonymizer import AnonymizerEngine
 from starlette.concurrency import run_in_threadpool
 from transformers import pipeline
 
+from app.adapters.llm_guardrail_recognizer import LLMGuardrailRecognizer
 from app.domain.models import ScrubResult
 
 # We use a specific DOB recogniser instead of the generic DATE_TIME so durations
-# ("six years") survive — only an actual date of birth is a PII risk. Phones are
-# left to Presidio's BUILT-IN multi-region recogniser (US/UK/DE/FR/IL/IN/CA/BR)
-# rather than a UK-only regex — that's the locale-general choice.
+# ("six years") survive — only an actual date of birth is a PII risk.
 _ENTITIES = [
     "PERSON",
     "EMAIL_ADDRESS",
@@ -69,7 +73,7 @@ _ALLOW = [
     "Kafka",
 ]
 
-# Pronuns that GLiNER mistakes with <PERSON>
+# Pronouns the NER layer sometimes mislabels as <PERSON>
 _PRONOUNS = {"i", "you", "he", "she", "we", "they", "it"}
 
 # A date of birth, in the forms "3 March 1990" and "03/03/1990". Requires a day
@@ -117,15 +121,9 @@ _POSTCODE = [
     ),
 ]
 
-_GLINER_ENTITIES = {
-    "religion": "RELIGION",
-    "health condition": "HEALTH",
-    "disability": "DISABILITY",
-    "sexual orientation": "SEXUAL_ORIENTATION",
-    "trade union membership": "TRADE_UNION",
-    "political opinion": "POLITICAL_OPINION",
-    "ethnicity": "ETHNICITY",
-}
+
+# The text that replaces a transcript flagged as injection.
+WITHHELD_MESSAGE = "[flagged by injection classifier — content withheld from scoring]"
 
 _INJECTION_MODEL = "protectai/deberta-v3-base-prompt-injection-v2"
 # Flag when the INJECTION probability reaches this.
@@ -185,9 +183,7 @@ class ClassifierGuardrail:
         self._analyzer.registry.add_recognizer(
             PatternRecognizer(supported_entity="UK_POSTCODE", patterns=_POSTCODE)
         )
-        self._analyzer.registry.add_recognizer(
-            GLiNERRecognizer(entity_mapping=_GLINER_ENTITIES)
-        )
+        self._analyzer.registry.add_recognizer(LLMGuardrailRecognizer())
         self._anonymizer = AnonymizerEngine()
         self._classifier = _injection_classifier()
 
@@ -234,7 +230,7 @@ class ClassifierGuardrail:
         #    content and skip PII work entirely — nothing downstream sees it.
         if self._injection_score(text) >= _INJECTION_THRESHOLD:
             return ScrubResult(
-                clean_text="[flagged by injection classifier — content withheld from scoring]",
+                clean_text=WITHHELD_MESSAGE,
                 pii_redacted=False,
                 injection_detected=True,
             )

@@ -16,7 +16,17 @@ class Settings(BaseSettings):
         llm_base_url: Base URL of the OpenAI-compatible model endpoint.
         llm_api_key: API key for that endpoint (ignored by Ollama).
         llm_model: Model name to request.
-        llm_timeout_s: Per-request timeout, in seconds.
+        llm_guardrail_base_url: Base URL for the self-hosted LLM used by the guardrail
+        llm_guardrail_model: Model name to request at that endpoint.
+        llm_timeout_s: Per-request timeout for the assessment LLM, in seconds.
+        llm_guardrail_timeout_s: Per-request timeout for the guardrail endpoint.
+            Deliberately separate and much larger: that endpoint scales to zero,
+            so the first request after an idle period waits for a GPU to start
+            and load the model.
+        jobs_account_url: Table endpoint of the account holding job state.
+        jobs_queue_url: Queue endpoint of the same account.
+        jobs_table_name: Table holding one entity per screening job.
+        jobs_queue_name: Queue carrying accepted job ids to the worker.
         service_api_key: Shared key clients must send to call this service.
     """
 
@@ -26,7 +36,27 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = "ollama"
     llm_model: str = "qwen2.5:3b"
+    llm_guardrail_base_url: str = "http://localhost:8001/v1"
+    llm_guardrail_model: str = "google/gemma-4-31B-it"
     llm_timeout_s: float = 60.0
+    # 15 minutes, against a measured ~13 minute cold start (2 min image pull,
+    # 1 min engine init, ~10 min loading 58 GiB of weights off the file share).
+    # Sharing the 60s assessment timeout meant every request that arrived on a
+    # cold endpoint timed out, and the recognizer fails closed -- so /screen
+    # returned 502 on the normal path, not an exceptional one.
+    #
+    # A caller waiting 13 minutes is still bad; the real fix is for /screen to
+    # return 202 and be polled (see infra/gemma/README.md). This makes the
+    # blocking path correct in the meantime rather than silently broken.
+    llm_guardrail_timeout_s: float = 900.0
+
+    # Job state and the work queue. A separate account from the model-weights
+    # share: that one is kind=FileStorage, which serves file shares only and has
+    # no table or queue endpoint.
+    jobs_account_url: str = "https://screeningjobs.table.core.windows.net/"
+    jobs_queue_url: str = "https://screeningjobs.queue.core.windows.net/"
+    jobs_table_name: str = "jobs"
+    jobs_queue_name: str = "screenings"
 
     # No default and non-empty on purpose: the app refuses to start without a
     # real key, so auth can never be silently disabled by a missing OR empty

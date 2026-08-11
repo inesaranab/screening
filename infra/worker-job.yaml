@@ -1,0 +1,96 @@
+## Container App Job spec for the screening worker.
+##
+## Performs the screenings that POST /screen accepts. Runs the same image as
+## screening-app with a different command, so there is one image to build.
+##
+## A template: the placeholders below are substituted before it is applied. It
+## is not valid input to `az containerapp job create --yaml` until that has run.
+##
+## A job rather than an app, because a job has no ingress. Azure closes any HTTP
+## request after 240 seconds, and the Article 9 detector takes minutes to wake
+## from zero. Nothing here serves a request, so that limit does not apply.
+location: ${REGION}
+type: Microsoft.App/jobs
+## The identity used to pull the image, read secrets from Key Vault, and reach
+## the job table and queue. It must be user-assigned -- see README.md, "The
+## image pull must use a user-assigned identity".
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    ${UAMI_ID}: {}
+properties:
+  environmentId: ${ENV_ID}
+  ## CPU. The worker calls the detector over HTTP; it hosts no model itself.
+  workloadProfileName: Consumption
+  configuration:
+    ## Started by KEDA when the queue is non-empty. An empty queue means no
+    ## execution and no cost.
+    triggerType: Event
+    ## One screening can take ~13 minutes when the detector is cold. This
+    ## matches the queue's visibility timeout, so a message cannot reappear
+    ## while the execution holding it is still running.
+    replicaTimeout: 1800
+    ## The queue provides redelivery: an execution that dies without deleting
+    ## its message leaves it to become visible again. Retrying here as well
+    ## would double the attempts for one failure.
+    replicaRetryLimit: 0
+    registries:
+      - server: ${ACR_LOGIN_SERVER}
+        identity: ${UAMI_ID}
+    secrets:
+      - name: service-api-key
+        keyVaultUrl: ${KV_URL}/secrets/screening-service-api-key
+        identity: ${UAMI_ID}
+      - name: portkey-api-key
+        keyVaultUrl: ${KV_URL}/secrets/portkey-api-key
+        identity: ${UAMI_ID}
+    eventTriggerConfig:
+      parallelism: 1
+      replicaCompletionCount: 1
+      scale:
+        minExecutions: 0
+        ## Each execution drains the whole queue before exiting, so a second is
+        ## usually redundant. The ceiling bounds concurrent callers of the
+        ## single-replica detector.
+        maxExecutions: 3
+        pollingInterval: 30
+        rules:
+          - name: screening-queue
+            type: azure-queue
+            ## Managed identity here too, so the scaler needs no storage key.
+            identity: ${UAMI_ID}
+            metadata:
+              accountName: ${JOBS_ACCOUNT}
+              queueName: ${JOBS_QUEUE}
+              ## Start an execution as soon as one message is waiting.
+              queueLength: "1"
+  template:
+    containers:
+      - name: worker
+        image: ${ACR_LOGIN_SERVER}/screening:${IMAGE_TAG}
+        ## The image's own CMD starts the API. The worker is the same code
+        ## entered at a different point.
+        command: ["python", "-m", "app.worker"]
+        resources:
+          cpu: 2
+          memory: 4Gi
+        env:
+          ## Required for Settings to construct. The worker serves no requests
+          ## and never checks it.
+          - name: SCREENING_SERVICE_API_KEY
+            secretRef: service-api-key
+          - name: SCREENING_PORTKEY_API_KEY
+            secretRef: portkey-api-key
+          - name: SCREENING_LLM_BASE_URL
+            value: https://api.portkey.ai/v1
+          - name: SCREENING_LLM_MODEL
+            value: google/gemini-3.5-flash-lite
+          - name: SCREENING_PORTKEY_VIRTUAL_KEY
+            value: screening-openrouter
+          ## The detector's address, resolvable only inside this environment.
+          - name: SCREENING_LLM_GUARDRAIL_BASE_URL
+            value: ${GEMMA_URL}
+          ## Names which identity DefaultAzureCredential should use, since the
+          ## container has more than one available.
+          - name: AZURE_CLIENT_ID
+            value: ${UAMI_CLIENT_ID}

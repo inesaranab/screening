@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.14-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688)
-![PII](https://img.shields.io/badge/PII-Presidio%20%2B%20GLiNER-4c8b2b)
+![PII](https://img.shields.io/badge/PII-Presidio%20%2B%20Gemma--4-4c8b2b)
 ![Injection](https://img.shields.io/badge/injection-classifier-4c8b2b)
 ![Quality](https://img.shields.io/badge/quality-DeepEval-4c8b2b)
 ![Tests](https://img.shields.io/badge/tests-pytest-4c8b2b)
@@ -62,7 +62,7 @@ The **injection** (*manipulation* — text that tries to hijack the model's inst
 
 ```bash
 uv run pytest -m "not live and not prod and not quality"   # deterministic — no model, no network. Run these in CI.
-uv run pytest -m live                      # hits the real Presidio + GLiNER + injection classifier (+ a live LLM)
+uv run pytest -m live                      # hits the real Presidio + Gemma-4 + injection classifier (+ a live LLM)
 uv run pytest -m prod --run-prod           # hits the deployed prod endpoint (needs az login; opt-in on purpose)
 
 uv run deepeval test run evals/test_quality.py   # output-quality evals (costs tokens — a live LLM plus a judge LLM)
@@ -170,7 +170,7 @@ check a guardrail regression would have the judge silently scoring withheld-resu
 | Area | How |
 |---|---|
 | **Structured, validated output** | `instructor` + Pydantic `Assessment`: `fit_score` constrained `1–5`, `rationale`/`evidence`/`next_step` enforced by the schema. Malformed model output → bounded re-ask (`max_retries=2`), then a mapped `502`. |
-| **Guardrail** | Presidio (structured PII: email, phone, DOB, UK NINO, UK postcode) + **GLiNER** (zero-shot, catches GDPR Article 9 special categories — religion, health, disability, sexual orientation, trade union, political opinion, ethnicity) + a trained injection classifier. **Fail-closed**: detected injection withholds the transcript — the model is never called. |
+| **Guardrail** | Presidio (structured PII: email, phone, DOB, UK NINO, UK postcode) + **Gemma-4-31B**, self-hosted on vLLM and registered as a Presidio recognizer (catches GDPR Article 9 special categories — religion, health, disability, sexual orientation, trade union, political opinion, ethnicity) + a trained injection classifier. **Fail-closed**: detected injection withholds the transcript — the model is never called. |
 | **Eval harness** | pytest, three-way split: deterministic (fakes, CI) / live (real guardrail + LLM, local) / prod (real deployed endpoint, opt-in via `--run-prod`) — plus a **DeepEval** `quality` tier for output quality, run separately via `deepeval test run` because it costs tokens on every run. |
 | **Auth** | `x-api-key` header, `secrets.compare_digest` (constant-time compare: checks the whole key regardless of where it differs, so response timing can't be used to guess the key character by character). |
 | **Secrets** | pydantic-settings from env/`.env`; no key default — the app **refuses to start** without one, so a real key can never be silently missing. |
@@ -268,11 +268,15 @@ check a guardrail regression would have the judge silently scoring withheld-resu
 # Architecture — hexagonal (ports & adapters)
 
 The **core** (domain + ports) is vendor-free: it defines *what* must happen
-(`scrub → assess → assemble`) plus two interfaces — a `Guardrail` that scrubs and an
-`LLMClient` that assesses. **Adapters** on the outside implement those interfaces against
-real tools (Presidio, an OpenAI-compatible model), and the composition root
-(`api/main.py`) wires them in. Dependencies point **inward**: adapters know the core, the
-core knows nothing about them.
+(`scrub → assess → assemble`) plus four interfaces — a `Guardrail` that scrubs, an
+`LLMClient` that assesses, a `JobStore` that remembers outcomes, and a `JobQueue` that
+carries accepted work to whoever performs it. **Adapters** on the outside implement those
+interfaces against real tools (Presidio, an OpenAI-compatible model, Azure Table Storage,
+Azure Storage Queues), and the composition root (`api/main.py`) wires them in.
+Dependencies point **inward**: adapters know the core, the core knows nothing about them.
+
+Each port has an in-memory adapter as well as a production one, which is why the
+deterministic tests need neither a model nor a network.
 
 ```mermaid
 flowchart LR
@@ -280,20 +284,27 @@ flowchart LR
 
     subgraph Adapters
         api["API adapter (FastAPI, auth, wiring)"]
-        guard["Guardrail adapter (Presidio + GLiNER + classifier)"]
+        worker["Worker adapter (drains the queue)"]
+        guard["Guardrail adapter (Presidio + Gemma-4 + classifier)"]
         llm["LLM adapter (OpenAI-compatible)"]
+        store["JobStore adapter (Azure Table / in-memory)"]
+        queue["JobQueue adapter (Azure Queue / in-memory)"]
     end
 
     subgraph Core
-        service["ScreenService: scrub, assess, assemble"]
-        contract["Contract: Assessment, Flags"]
+        service["ScreenService: start, run, result"]
+        contract["Contract: Assessment, Flags, Job"]
     end
 
     api --> service
+    worker --> service
     service -->|Guardrail port| guard
     service -->|LLMClient port| llm
+    service -->|JobStore port| store
+    service -->|JobQueue port| queue
+    queue -.->|KEDA scales on depth| worker
     guard --> presidio["Presidio (structured PII)"]
-    guard --> gliner["GLiNER (GDPR Article 9, zero-shot)"]
+    guard --> gemma["Gemma-4-31B via vLLM (GDPR Article 9)"]
     llm -->|"settings.llm_base_url (no portkey_api_key)"| ollama["Ollama (local dev)"]
     llm -->|"settings.portkey_api_key set"| gateway["Portkey gateway"]
     gateway --> model["Gemini via OpenRouter (prod)"]
@@ -323,3 +334,130 @@ same gateway.
   everything, so it carries the wiring weight.
 - **The call path is less obvious** — a request hops core → port → adapter, more to trace than a
   straight-line script.
+
+---
+
+# Deployment topology — why the detector is a second container
+
+The Article 9 detector is Gemma-4-31B, which needs ~62 GB of VRAM at bf16. That does not
+fit on a CPU container and does not fit on a T4 (16 GB), so it cannot live in the same
+container as the API — it needs its own A100. Splitting it out is a hardware constraint
+first, and only incidentally a design choice.
+
+What makes the split safe is *where* the second container sits. It receives the transcript
+**before** redaction, so it sees raw PII and Article 9 special-category data. It therefore
+runs on **internal ingress**: no public DNS name, no route in from the internet, reachable
+only by apps inside the same managed environment. That is also why both containers must
+share one environment, and therefore one region — an environment is single-region, so
+co-location is what buys the private hop.
+
+## Why the screening is asynchronous
+
+Container Apps closes an HTTP request after **240 seconds**, and that ceiling cannot be
+raised on the Consumption plan. A screening that starts a cold A100 takes minutes: the
+weights alone are ~62 GB from a mounted file share. Answering a screening inside its own
+request was therefore never viable, whatever the code did.
+
+So the HTTP layer no longer screens. `POST /screen` records a job, publishes it, and
+returns **202 with an id** in milliseconds. A separate **Container Apps Job** — a workload
+with no ingress, and so no request to time out — performs the screening and writes the
+result. `GET /screen/{id}` returns 202 while it is pending and 200 once it is not.
+
+The queue is what connects them, and it is also what starts the worker: KEDA, the scaler
+Container Apps uses, watches the queue depth and starts an execution when a message
+arrives. An empty queue means nothing is running and nothing is billed.
+
+The request travels **inside the queue message**, not in the job store. An unredacted
+transcript therefore exists only while the work is outstanding and is destroyed when the
+message is deleted. The job store holds the id, the status, and the redacted result — and
+for a failure, the exception's class name only, because exception messages can quote the
+transcript.
+
+Two limits keep "only while the work is outstanding" true rather than aspirational. A
+message is published with a **4-hour lifetime**, so one that no worker ever completes
+expires instead of remaining readable for the days Azure would otherwise allow. And a
+message redelivered more than three times is recorded as failed and deleted without being
+retried — otherwise a transcript that crashes every worker would cycle on the queue for as
+long as the queue would hold it.
+
+That expiry creates its own hole, which the job store has to close: a message can vanish
+without any worker having touched it, leaving a row that says `pending` and a `GET` that
+answers 202 forever. So a job still pending five hours after it was accepted is settled as
+failed when it is next read. Resolving it **on read** rather than on a schedule means the
+answer is correct without a background process having to be alive for it to be correct.
+
+```text
+                 ┌───────────────────────────────────────────────────────────────┐
+                 │  managed environment  (Sweden Central)                        │
+  client         │                                                               │
+    │  raw       │   ┌────────────────────────────┐                              │
+    │ transcript │   │  screening-app             │   create    ┌─────────────┐  │
+    ├─ POST ─────┼──►│  CPU · Consumption · min=0 │────────────►│  Table      │  │
+    │◄─ 202 id ──┼───│  accepts and answers.      │             │  job store  │  │
+    │  (public)  │   │  never screens.            │─┐  read ───►│  id·status  │  │
+    │            │   └────────────────────────────┘ │           │  ·result    │  │
+    │            │                        ▲         │ enqueue   └─────────────┘  │
+    ├─ GET ──────┼────────────────────────┘         ▼                  ▲         │
+    │  /{id}     │                          ┌──────────────┐           │         │
+    │◄─ 202 ─────┼──  pending               │  Queue       │           │ write   │
+    │◄─ 200 ─────┼──  done or failed        │  carries the │           │ result  │
+    │            │                          │  transcript  │           │         │
+    │            │                          └──────┬───────┘           │         │
+    │            │                     KEDA starts │ on depth ≥ 1      │         │
+    │            │                                 ▼                   │         │
+    │            │   ┌──────────────────────────────────────────┐      │         │
+    │            │   │  screening-worker    Job · no ingress    │──────┘         │
+    │            │   │  CPU · min=0 · one execution per drain   │                │
+    │            │   │                                          │                │
+    │            │   │  ClassifierGuardrail                     │                │
+    │            │   │    ├ injection classifier                │                │
+    │            │   │    └ AnalyzerEngine.analyze(text) ── ONE PASS ──┐         │
+    │            │   │        ├ regex: NINO                     │      │         │
+    │            │   │        ├ regex: POSTCODE                 │      │         │
+    │            │   │        ├ spaCy NER                       │      │         │
+    │            │   │        └ LLMGuardrailRecognizer ──┐      │      │         │
+    │            │   │                                   │ raw  │      │         │
+    │            │   │  ◄── spans merged ────────────────┼──────┼──────┘         │
+    │            │   │      anonymize → <RELIGION>       │      │                │
+    │            │   └───────────────┬───────────────────┼──────┘                │
+    │            │                   │                   ▼                       │
+    │            │                   │      ┌──────────────────────┐             │
+    │            │                   │      │  screening-gemma     │             │
+    │            │                   │      │  A100 80GB · min=0   │             │
+    │            │                   │      │  vLLM + Gemma-4-31B  │             │
+    │            │                   │      │  NO public address   │             │
+    │            │                   │      └──────────────────────┘             │
+    └────────────┼───────────────────┼───────────────────────────────────────────┘
+                 └───────────────────┼──  redacted transcript only
+                                     ▼
+                                Portkey ──► Gemini   (assessment)
+```
+
+The detail worth noticing is that Presidio and Gemma are **not** two sequential stages.
+`AnalyzerEngine.analyze()` runs every registered recognizer over the same text in a single
+call, and `LLMGuardrailRecognizer` is simply one of them that happens to make an HTTP hop.
+All spans — regex, spaCy, and LLM — are merged before a single anonymization step. Adding
+the LLM detector was a registry call, not a pipeline rewrite.
+
+The worker and the API are **the same image**, entered at a different point: the image's own
+command starts the API, and the job overrides it with `python -m app.worker`. One build, one
+registry tag, no chance of the two drifting apart.
+
+The detector and the worker both scale to zero, and serverless GPU bills only while a replica
+runs — so an idle A100 costs nothing. Two qualifications, because "scales to zero" is easy to
+overclaim:
+
+- **The GPU keeps billing through its cooldown.** The scaler waits 900 seconds after the last
+  request before removing the replica, so a single screening is charged for its own duration
+  plus up to 15 idle minutes. The cooldown is deliberate: it is longer than the cold start it
+  would otherwise repeat.
+- **The API is not configured to zero.** It inherits whatever its deployment sets, and the
+  deploy workflow updates only the image. It is a CPU container, so the cost is small, but it
+  is not nothing.
+
+The trade for the GPU going to zero is a multi-minute cold start while ~62 GB of weights load
+from the mounted share. The queue absorbs that wait instead of a caller holding a connection
+open through it.
+
+Infrastructure lives in `infra/gemma/` for the detector and `infra/worker-job.yaml` for the
+worker.
