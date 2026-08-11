@@ -39,16 +39,16 @@ class Settings(BaseSettings):
     llm_guardrail_base_url: str = "http://localhost:8001/v1"
     llm_guardrail_model: str = "google/gemma-4-31B-it"
     llm_timeout_s: float = 60.0
-    # 15 minutes, against a measured ~13 minute cold start (2 min image pull,
-    # 1 min engine init, ~10 min loading 58 GiB of weights off the file share).
-    # Sharing the 60s assessment timeout meant every request that arrived on a
-    # cold endpoint timed out, and the recognizer fails closed -- so /screen
-    # returned 502 on the normal path, not an exceptional one.
+    # Below the 240 seconds at which ingress severs any single request, internal
+    # routes included. A larger value cannot fire, so the call would end as a
+    # transport error from the proxy rather than a timeout naming this endpoint.
     #
-    # A caller waiting 13 minutes is still bad; the real fix is for /screen to
-    # return 202 and be polled (see infra/gemma/README.md). This makes the
-    # blocking path correct in the meantime rather than silently broken.
-    llm_guardrail_timeout_s: float = 900.0
+    # It does not have to cover the detector's cold start. The worker establishes
+    # that the endpoint is serving by repeating a short probe before it screens
+    # anything (see app/worker.py), so this bounds a call to an endpoint already
+    # known to be up. Larger than the assessment timeout because this endpoint
+    # runs a 31B model on one replica.
+    llm_guardrail_timeout_s: float = 200.0
 
     # Job state and the work queue. A separate account from the model-weights
     # share: that one is kind=FileStorage, which serves file shares only and has
