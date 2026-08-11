@@ -96,9 +96,58 @@ made it faster but was never required.
 measurement. It worked, and it removed the exact component that was failing. When a
 workaround makes a symptom disappear, it has hidden the evidence, not diagnosed anything.
 
-## Three rules about revisions, and how to check them
+## Four rules about revisions, and how to check them
 
-Learned the expensive way on 2026-08-09/10.
+Learned the expensive way on 2026-08-09/10/11.
+
+### 0. PURGE old revisions before updating, never deactivate after
+
+This is the rule that would have prevented every billing incident below.
+
+`az containerapp revision deactivate` stops a revision running. It does **not** remove it,
+and it does **not** change the app's template. A deactivated revision keeps whatever
+`minReplicas` it was born with, and the next update reactivates it -- which starts a replica
+immediately, on a GPU if that is what it runs on.
+
+Wrong, and repeated five times:
+
+```bash
+az containerapp update ...                    # resurrects old revisions
+az containerapp revision deactivate ...       # notice and clean up afterwards
+```
+
+Right:
+
+```bash
+# 1. list every revision and its baked-in minReplicas
+az containerapp revision list -n <app> -g <rg> \
+  --query "[].{rev:name, active:properties.active, min:properties.template.scale.minReplicas}" -o table
+
+# 2. deactivate every revision that carries min>0, BEFORE touching the app
+az containerapp revision deactivate -n <app> -g <rg> --revision <NAME>
+
+# 3. only now update
+az containerapp update ...
+
+# 4. verify, every time
+az containerapp revision list -n <app> -g <rg> \
+  --query "[?properties.active].{rev:name, replicas:properties.replicas, min:properties.template.scale.minReplicas}" -o table
+```
+
+### 0b. The app template and its revisions are two different things
+
+Deactivating every revision stops everything running but leaves the **app template**
+unchanged. If the template says `minReplicas: 1`, the next revision created from it -- by any
+update, for any reason -- starts a replica. Check both:
+
+```bash
+az containerapp show -n <app> -g <rg> --query "properties.template.scale.minReplicas" -o tsv   # the recipe
+az containerapp revision list -n <app> -g <rg> --query "sum([].properties.replicas)" -o tsv    # what is running
+```
+
+A GPU app was left with a template of `minReplicas: 1` overnight on 2026-08-10. Nothing ran,
+because every revision was deactivated -- but fixing the template the next morning
+immediately started an A100, because the fix itself is an update.
 
 ### 1. Revisions are immutable
 
