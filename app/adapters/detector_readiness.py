@@ -32,7 +32,12 @@ def http_probe(client: HttpClientLike, url: str) -> Callable[[], Awaitable[bool]
     """
 
     async def probe() -> bool:
-        return (await client.get(url)).status_code == 200
+        status = (await client.get(url)).status_code
+        if status != 200:
+            # A redirect, a rejection and a service still starting are all "not
+            # ready" but call for different responses, so the status is kept.
+            logger.info("detector_probe_status", extra={"context": {"status": status}})
+        return status == 200
 
     return probe
 

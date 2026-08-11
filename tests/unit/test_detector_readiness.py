@@ -158,3 +158,39 @@ async def test_each_attempt_is_logged():
 
     assert "detector_not_ready_yet" in events
     assert "detector_ready" in events
+
+
+@pytest.mark.asyncio
+async def test_a_probe_reports_the_status_it_received():
+    """ "Not ready" covers a redirect, a rejection and a service still starting,
+    which need different responses. The status is recorded so the logs say
+    which one it was."""
+    import logging
+
+    from app.adapters.detector_readiness import http_probe
+
+    events: list[dict] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            events.append(getattr(record, "context", {}))
+
+    class _Response:
+        status_code = 307
+
+    class _Client:
+        async def get(self, url: str):
+            return _Response()
+
+    logger = logging.getLogger("screen")
+    handler = _Collect()
+    logger.addHandler(handler)
+    previous = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        assert not await http_probe(_Client(), "http://detector/v1/models")()
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+
+    assert any(c.get("status") == 307 for c in events)
