@@ -220,3 +220,20 @@ async def test_expiry_does_not_overwrite_a_finished_job():
 
     assert job is not None
     assert job.status is JobStatus.DONE
+
+
+@pytest.mark.asyncio
+async def test_abandoning_does_not_overwrite_a_finished_job():
+    """A message can come back after its screening was recorded, so abandoning
+    on delivery count alone would replace a result the caller already has."""
+    store = InMemoryJobStore()
+    service = _service(store=store)
+    job_id = await service.start(_REQ)
+    await service.run(job_id, _REQ)
+
+    await service.abandon(job_id, "TooManyDeliveries")
+
+    job = await store.get(job_id)
+    assert job is not None
+    assert job.status is JobStatus.DONE
+    assert job.result is not None

@@ -107,12 +107,20 @@ class ScreenService:
         For work that cannot be completed however many times it is tried, where
         another attempt would repeat the failure rather than resolve it.
 
+        Only a job still PENDING is settled, and the store decides that as one
+        operation. Work is given up on because it was delivered too often, and a
+        job can be delivered again after its outcome was recorded, so a job
+        already carrying an answer keeps it -- including one that acquires an
+        answer while this call is in flight.
+
         Args:
             job_id: The id returned by ``start``.
             reason: Why the job was given up on. Must not quote the transcript.
         """
-        logger.warning("job_abandoned", extra={"context": {"job": job_id}})
-        await self._jobs.fail(job_id, reason)
+        if await self._jobs.fail_if_pending(job_id, reason):
+            logger.warning("job_abandoned", extra={"context": {"job": job_id}})
+        else:
+            logger.info("job_abandon_skipped", extra={"context": {"job": job_id}})
 
     async def run(self, job_id: str, request: ScreenRequest) -> None:
         """Perform the screening and store its outcome against the job.

@@ -10,7 +10,11 @@ arrive, so no process runs while there is no work.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
+import httpx
+
+from app.adapters.detector_readiness import http_probe, wait_until_ready
 from app.adapters.guard_classifier import ClassifierGuardrail
 from app.adapters.job_queue_azure import AzureJobQueue
 from app.adapters.job_store_table import AzureTableJobStore
@@ -29,8 +33,23 @@ logger = logging.getLogger("screen")
 # transcript on the queue while repeating the same failure.
 MAX_DELIVERIES = 3
 
+# How long to wait for the detector to start serving, and how often to ask.
+# Loading the weights takes minutes; the deadline sits below the job's own
+# replicaTimeout so an unreachable detector ends as a recorded failure rather
+# than a killed replica. Each probe is a separate short request, because
+# platform ingress closes any single request at 240 seconds -- the wait has to
+# happen between requests, never inside one.
+DETECTOR_READY_DEADLINE_S = 900.0
+DETECTOR_PROBE_INTERVAL_S = 15.0
+DETECTOR_PROBE_TIMEOUT_S = 30.0
 
-async def drain(service: ScreenService, queue: JobQueue) -> int:
+
+async def drain(
+    service: ScreenService,
+    queue: JobQueue,
+    *,
+    detector_ready: Callable[[], Awaitable[bool]] | None = None,
+) -> int:
     """Screen every job currently on the queue.
 
     A message is deleted once the screening has been recorded, whether it
@@ -43,9 +62,15 @@ async def drain(service: ScreenService, queue: JobQueue) -> int:
     the job is recorded as failed and its message deleted without being
     attempted, so a job that kills every worker cannot cycle indefinitely.
 
+    A job taken while the detector is unreachable is recorded as failed rather
+    than attempted. Attempting it would spend the platform's entire request
+    budget on a call that cannot succeed, and end in the same failure.
+
     Args:
         service: Performs the screening and records the outcome.
         queue: Supplies the work.
+        detector_ready: Returns True once the detector can be called. None
+            skips the check, for callers that supply their own guardrail.
 
     Returns:
         The number of jobs screened. Abandoned jobs are not counted, having
@@ -55,6 +80,10 @@ async def drain(service: ScreenService, queue: JobQueue) -> int:
     while (job := await queue.receive()) is not None:
         if job.delivery_count > MAX_DELIVERIES:
             await service.abandon(job.job_id, "TooManyDeliveries")
+            await queue.delete(job)
+            continue
+        if detector_ready is not None and not await detector_ready():
+            await service.abandon(job.job_id, "DetectorUnavailable")
             await queue.delete(job)
             continue
         logger.info("worker_job_started", extra={"context": {"job": job.job_id}})
@@ -94,10 +123,24 @@ async def main() -> None:
         job_queue=queue,
     )
 
+    # The first request also activates the detector, since it scales to zero,
+    # so probing both starts it and establishes when it is usable.
+    http = httpx.AsyncClient(timeout=DETECTOR_PROBE_TIMEOUT_S)
+    probe = http_probe(http, f"{settings.llm_guardrail_base_url.rstrip('/')}/models")
+
+    async def detector_ready() -> bool:
+        return await wait_until_ready(
+            probe,
+            deadline_s=DETECTOR_READY_DEADLINE_S,
+            interval_s=DETECTOR_PROBE_INTERVAL_S,
+            sleep=asyncio.sleep,
+        )
+
     try:
-        processed = await drain(service, queue)
+        processed = await drain(service, queue, detector_ready=detector_ready)
         logger.info("worker_drained", extra={"context": {"processed": processed}})
     finally:
+        await http.aclose()
         await llm.aclose()
         await queue_client.close()
         await table.close()

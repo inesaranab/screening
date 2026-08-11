@@ -10,7 +10,11 @@ import json
 from datetime import datetime
 from typing import Protocol
 
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core import MatchConditions
+from azure.core.exceptions import (
+    ResourceModifiedError,
+    ResourceNotFoundError,
+)
 from azure.data.tables import UpdateMode
 
 from app.domain.models import Job, JobStatus, ScreenResult
@@ -26,6 +30,8 @@ class TableClientLike(Protocol):
     async def upsert_entity(self, entity: dict, **kwargs: object) -> object: ...
 
     async def get_entity(self, partition_key: str, row_key: str) -> dict: ...
+
+    async def update_entity(self, entity: dict, **kwargs: object) -> object: ...
 
 
 def job_to_entity(job: Job) -> dict:
@@ -156,3 +162,33 @@ class AzureTableJobStore:
             },
             mode=UpdateMode.MERGE,
         )
+
+    async def fail_if_pending(self, job_id: str, error: str) -> bool:
+        """Fail a job only while it is pending. See ``JobStore.fail_if_pending``.
+
+        The read supplies the row's etag and the write requires it to be
+        unchanged, so a completion that lands in between causes the write to be
+        refused rather than to replace the result.
+        """
+        try:
+            entity = dict(await self._table.get_entity(job_id, job_id))
+        except ResourceNotFoundError:
+            return False
+        if entity.get("status") != JobStatus.PENDING.value:
+            return False
+        try:
+            await self._table.update_entity(
+                {
+                    "PartitionKey": job_id,
+                    "RowKey": job_id,
+                    "status": JobStatus.FAILED.value,
+                    "result": "",
+                    "error": error,
+                },
+                mode=UpdateMode.MERGE,
+                etag=entity.get("etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except ResourceModifiedError:
+            return False
+        return True

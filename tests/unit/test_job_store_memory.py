@@ -96,3 +96,34 @@ async def test_settling_a_job_keeps_when_it_was_accepted():
     stored = await store.get("abc123")
     assert stored is not None
     assert stored.created_at == accepted.created_at
+
+
+@pytest.mark.asyncio
+async def test_fail_if_pending_refuses_a_job_that_already_finished():
+    """Checking the status and writing the failure must be one operation. A job
+    can be completed between a separate read and write, and the failure would
+    then replace an answer the caller may already have read."""
+    store = InMemoryJobStore()
+    await store.create("abc123")
+    await store.complete("abc123", _a_result())
+
+    settled = await store.fail_if_pending("abc123", "TooManyDeliveries")
+
+    assert settled is False
+    job = await store.get("abc123")
+    assert job is not None
+    assert job.status is JobStatus.DONE
+    assert job.result is not None
+
+
+@pytest.mark.asyncio
+async def test_fail_if_pending_settles_a_job_still_pending():
+    store = InMemoryJobStore()
+    await store.create("abc123")
+
+    settled = await store.fail_if_pending("abc123", "TooManyDeliveries")
+
+    assert settled is True
+    job = await store.get("abc123")
+    assert job is not None
+    assert job.status is JobStatus.FAILED

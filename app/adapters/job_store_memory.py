@@ -71,3 +71,14 @@ class InMemoryJobStore:
             if existing is not None:
                 settled = settled.model_copy(update={"created_at": existing.created_at})
             self._jobs[job_id] = settled
+
+    async def fail_if_pending(self, job_id: str, error: str) -> bool:
+        """Fail a job only while it is pending. See `JobStore.fail_if_pending`."""
+        async with self._lock:
+            existing = self._jobs.get(job_id)
+            if existing is None or existing.status is not JobStatus.PENDING:
+                return False
+            self._jobs[job_id] = Job(
+                id=job_id, status=JobStatus.FAILED, error=error
+            ).model_copy(update={"created_at": existing.created_at})
+            return True
