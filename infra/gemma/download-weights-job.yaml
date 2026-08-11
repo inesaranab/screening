@@ -45,12 +45,16 @@ properties:
         ## inside this container and the share gets only pointers to it -- and 
         ## the container is deleted when the job ends, so the share would look
         ## full but hold nothing.
+        ## revision= pins the commit. Without it the download follows the
+        ## repository's default branch, so re-running this job can place
+        ## different weights on the share than the ones that were evaluated.
         args:
           - >-
             set -e;
             pip install --no-cache-dir huggingface_hub==1.27.0;
             HF_XET_HIGH_PERFORMANCE=1 python -c "from huggingface_hub import
             snapshot_download; snapshot_download('${HF_REPO}',
+            revision='${HF_REVISION}',
             local_dir='/models/${MODEL_DIR}', max_workers=8)"
         resources:
           cpu: 4.0

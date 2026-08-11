@@ -22,6 +22,13 @@ from app.ports.job_queue import JobQueue
 
 logger = logging.getLogger("screen")
 
+# How many times a message may be delivered before the job is given up on. A
+# screening that failed is recorded and its message deleted, so redelivery only
+# happens when a worker died before recording anything. Past this count the
+# cause is not transient, and further attempts would keep an unredacted
+# transcript on the queue while repeating the same failure.
+MAX_DELIVERIES = 3
+
 
 async def drain(service: ScreenService, queue: JobQueue) -> int:
     """Screen every job currently on the queue.
@@ -32,17 +39,24 @@ async def drain(service: ScreenService, queue: JobQueue) -> int:
     redeliver a job that fails identically, indefinitely.
 
     A message whose worker dies before deletion becomes visible again and is
-    retried, which is the intended behaviour for a crash.
+    retried, which is the intended behaviour for a crash. Past MAX_DELIVERIES
+    the job is recorded as failed and its message deleted without being
+    attempted, so a job that kills every worker cannot cycle indefinitely.
 
     Args:
         service: Performs the screening and records the outcome.
         queue: Supplies the work.
 
     Returns:
-        The number of jobs processed.
+        The number of jobs screened. Abandoned jobs are not counted, having
+        never been attempted.
     """
     processed = 0
     while (job := await queue.receive()) is not None:
+        if job.delivery_count > MAX_DELIVERIES:
+            await service.abandon(job.job_id, "TooManyDeliveries")
+            await queue.delete(job)
+            continue
         logger.info("worker_job_started", extra={"context": {"job": job.job_id}})
         await service.run(job.job_id, job.request)
         await queue.delete(job)

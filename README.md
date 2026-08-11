@@ -373,7 +373,14 @@ message is deleted. The job store holds the id, the status, and the redacted res
 for a failure, the exception's class name only, because exception messages can quote the
 transcript.
 
-```
+Two limits keep "only while the work is outstanding" true rather than aspirational. A
+message is published with a **4-hour lifetime**, so one that no worker ever completes
+expires instead of remaining readable for the days Azure would otherwise allow. And a
+message redelivered more than three times is recorded as failed and deleted without being
+retried — otherwise a transcript that crashes every worker would cycle on the queue for as
+long as the queue would hold it.
+
+```text
                  ┌───────────────────────────────────────────────────────────────┐
                  │  managed environment  (Sweden Central)                        │
   client         │                                                               │
@@ -430,10 +437,21 @@ The worker and the API are **the same image**, entered at a different point: the
 command starts the API, and the job overrides it with `python -m app.worker`. One build, one
 registry tag, no chance of the two drifting apart.
 
-Everything scales to zero — API, worker, and GPU. Serverless GPU bills only while a replica
-is running and idle charges do not apply, so the cost of the A100 when nobody is screening is
-nothing; the trade is a multi-minute cold start while ~62 GB of weights load from the mounted
-share. The queue absorbs that wait instead of a caller holding a connection open through it.
+The detector and the worker both scale to zero, and serverless GPU bills only while a replica
+runs — so an idle A100 costs nothing. Two qualifications, because "scales to zero" is easy to
+overclaim:
+
+- **The GPU keeps billing through its cooldown.** The scaler waits 900 seconds after the last
+  request before removing the replica, so a single screening is charged for its own duration
+  plus up to 15 idle minutes. The cooldown is deliberate: it is longer than the cold start it
+  would otherwise repeat.
+- **The API is not configured to zero.** It inherits whatever its deployment sets, and the
+  deploy workflow updates only the image. It is a CPU container, so the cost is small, but it
+  is not nothing.
+
+The trade for the GPU going to zero is a multi-minute cold start while ~62 GB of weights load
+from the mounted share. The queue absorbs that wait instead of a caller holding a connection
+open through it.
 
 Infrastructure lives in `infra/gemma/` for the detector and `infra/worker-job.yaml` for the
 worker.

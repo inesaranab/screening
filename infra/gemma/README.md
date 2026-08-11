@@ -389,9 +389,24 @@ The two `date` stamps bracket the failure. Anything at ~240s is the proxy, not t
   using the GPU profile would burn A100 minutes on pure I/O.
 - `vllm-app.yaml` — the `screening-gemma` app. Internal ingress, `gpu-a100`, scale to zero.
 
+- `worker-job.yaml` (in `infra/`) — the queue-triggered screening worker.
+
 Both are templates with `${...}` placeholders, so neither is directly appliable. Substitute
-the values, then `az containerapp [job] create --yaml <file>`. They exist because volume
-mounts and probes have no CLI flag — everything else here was done with plain `az`.
+the values, then create the resource. `--yaml` supplies the body but **not** the resource
+name or its group, so both flags are still required:
+
+```bash
+az containerapp job create --name gemma-download-weights -g screening-rg --yaml <file>
+az containerapp    create --name screening-gemma         -g screening-rg --yaml <file>
+```
+
+They exist because volume mounts and probes have no CLI flag — everything else here was
+done with plain `az`.
+
+`HF_REVISION` pins the model to one commit. Without it `snapshot_download` follows the
+repository's default branch, so re-running the job months later can place weights on the
+share that were never evaluated — and nothing in the deployment would show it. Take the
+value from the model's *Files and versions* tab on Hugging Face.
 
 ## Where every field comes from
 

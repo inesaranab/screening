@@ -46,8 +46,11 @@ async def test_start_records_a_pending_job_and_does_no_work():
 
 
 @pytest.mark.asyncio
-async def test_start_marks_the_job_failed_when_publishing_it_does_not():
-    """A job nobody can perform must not be left claiming to be pending."""
+async def test_start_leaves_the_job_pending_when_publishing_raises():
+    """A raised publish is ambiguous: the queue may have accepted the message
+    before the failure, in which case a worker will still run the job. FAILED
+    would then be contradicted by a result arriving later, so the job keeps the
+    status that is true either way."""
 
     class BrokenQueue:
         """Records the id it was asked to publish, then refuses to publish."""
@@ -68,8 +71,8 @@ async def test_start_marks_the_job_failed_when_publishing_it_does_not():
 
     job = await store.get(queue.job_id)
     assert job is not None
-    assert job.status is JobStatus.FAILED
-    assert job.error == "ConnectionError"
+    assert job.status is JobStatus.PENDING
+    assert job.error is None
 
 
 @pytest.mark.asyncio

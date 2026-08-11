@@ -8,6 +8,20 @@ description: Operating the Screening service's Azure infrastructure without acci
 The GPU app (`screening-gemma`) runs an A100 at **~€2.16/hour**. Every rule here exists
 because it was broken once and billed for it.
 
+## Rule 0 — Name the subscription explicitly in every command
+
+Without `--subscription`, every command below runs against whatever the CLI's default
+happens to be. A preflight check can then report on one subscription while the GPU is
+billing on another, which makes "nothing is running" a false negative rather than an answer.
+
+```bash
+export AZURE_SUBSCRIPTION_ID=<id>   # once per session
+```
+
+Append `--subscription "$AZURE_SUBSCRIPTION_ID"` to every `az containerapp` command in this
+file, and use the same id in the `az rest` URL. The id is not written here — this file is in
+a public repository.
+
 ## Rule 1 — Check what is running BEFORE starting work, not only after
 
 Two separate incidents cost money because a session began without checking state: an A100
@@ -15,8 +29,8 @@ left running for 1h38m (~€3.50), and an app left at `minReplicas: 1` overnight
 
 ```bash
 for a in screening-app screening-gemma; do
-  echo "$a: replicas=$(az containerapp revision list -n $a -g screening-rg --query 'sum([].properties.replicas)' -o tsv)"
-  echo "  app-template min=$(az containerapp show -n $a -g screening-rg --query 'properties.template.scale.minReplicas' -o tsv)"
+  echo "$a: replicas=$(az containerapp revision list -n $a -g screening-rg --subscription "$AZURE_SUBSCRIPTION_ID" --query 'sum([].properties.replicas)' -o tsv)"
+  echo "  app-template min=$(az containerapp show -n $a -g screening-rg --subscription "$AZURE_SUBSCRIPTION_ID" --query 'properties.template.scale.minReplicas' -o tsv)"
 done
 ```
 

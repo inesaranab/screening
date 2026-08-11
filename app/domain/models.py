@@ -1,8 +1,9 @@
 """The contract for /screen — the Pydantic types every layer depends on."""
 
 from enum import Enum
+from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # Derived from the detector's context window. It is served with
 # --max-model-len 8192, covering the instructions, the transcript and the quotes
@@ -16,6 +17,12 @@ MAX_TRANSCRIPT_CHARS = 24_000
 # posting into a transport error raised after the job is recorded, rather than a
 # validation error naming the field.
 MAX_JOB_DESCRIPTION_CHARS = 8_000
+
+# Derived from the 64 KiB ceiling on a queue message, less headroom for the job
+# id and the JSON that wraps both fields. The character caps above bound length;
+# this bounds size, which is what the ceiling is actually expressed in. A
+# character can occupy up to four UTF-8 bytes, so the two are not equivalent.
+MAX_REQUEST_BYTES = 60_000
 
 
 class ScreenRequest(BaseModel):
@@ -38,6 +45,25 @@ class ScreenRequest(BaseModel):
         max_length=MAX_JOB_DESCRIPTION_CHARS,
         description="The role being screened for.",
     )
+
+    @model_validator(mode="after")
+    def _fits_in_a_queue_message(self) -> Self:
+        """Reject a request too large to publish.
+
+        Returns:
+            The request, unchanged.
+
+        Raises:
+            ValueError: If the two fields together exceed MAX_REQUEST_BYTES
+                once encoded as UTF-8.
+        """
+        size = len(self.transcript.encode()) + len(self.job_description.encode())
+        if size > MAX_REQUEST_BYTES:
+            raise ValueError(
+                f"encoded request is {size} bytes, over the "
+                f"{MAX_REQUEST_BYTES} allowed (MAX_REQUEST_BYTES)"
+            )
+        return self
 
 
 class NextStep(str, Enum):
@@ -168,3 +194,27 @@ class Job(BaseModel):
         default=None,
         description="Why the screening failed. Set when status is FAILED.",
     )
+
+    @model_validator(mode="after")
+    def _payload_matches_status(self) -> Self:
+        """Reject a job whose payload contradicts its status.
+
+        Returns:
+            The job, unchanged.
+
+        Raises:
+            ValueError: If DONE carries no result, FAILED carries no error,
+                PENDING carries either, or a job carries both.
+        """
+        expected = {
+            JobStatus.PENDING: (False, False),
+            JobStatus.DONE: (True, False),
+            JobStatus.FAILED: (False, True),
+        }[self.status]
+        if (self.result is not None, self.error is not None) != expected:
+            raise ValueError(
+                f"a {self.status.value} job must carry "
+                f"{'a result' if expected[0] else 'an error' if expected[1] else 'neither'}"
+                " and nothing else"
+            )
+        return self

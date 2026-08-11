@@ -15,11 +15,15 @@ class QueuedJob:
         request: The transcript and job description to screen.
         receipt: Adapter-specific handle identifying this delivery, passed back
             to ``delete``. Opaque to the domain.
+        delivery_count: How many times this message has been handed to a
+            worker, this delivery included. A count above one means an earlier
+            attempt did not finish.
     """
 
     job_id: str
     request: ScreenRequest
     receipt: Any = None
+    delivery_count: int = 1
 
 
 class JobQueue(Protocol):

@@ -10,6 +10,7 @@ import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated
 
+from azure.core.exceptions import AzureError
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
 from azure.storage.queue.aio import QueueClient
@@ -110,8 +111,20 @@ async def screen(
 
     Returns:
         The accepted job, pending, carrying the id to poll with.
+
+    Raises:
+        HTTPException: 503 if the job could not be recorded or published. The
+            storage account is unreachable, not the request malformed, so the
+            caller may retry the same body.
     """
-    job_id = await service.start(request)
+    try:
+        job_id = await service.start(request)
+    except AzureError:
+        logger.exception("screen_submission_failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not accept the screening. Try again shortly.",
+        ) from None
     logger.info("screen_accepted", extra={"context": {"job": job_id}})
     return Job(id=job_id)
 

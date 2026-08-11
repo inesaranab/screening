@@ -60,3 +60,35 @@ def test_an_oversized_job_description_is_rejected():
             transcript="5y Python",
             job_description="x" * (MAX_JOB_DESCRIPTION_CHARS + 1),
         )
+
+
+def test_a_request_whose_encoded_bytes_exceed_the_queue_limit_is_rejected():
+    """The character caps bound length, not size. Every character of some
+    scripts is three UTF-8 bytes, so a request inside both caps can still be
+    too large to publish -- and it would be rejected in transport, after the
+    job row exists, rather than by validation."""
+    from app.domain.models import MAX_TRANSCRIPT_CHARS
+
+    # Inside the character cap, three UTF-8 bytes each.
+    with pytest.raises(ValidationError) as exc:
+        ScreenRequest(transcript="世" * MAX_TRANSCRIPT_CHARS, job_description="後端")
+
+    assert "MAX_REQUEST_BYTES" in str(exc.value)
+
+
+def test_a_request_at_the_byte_limit_is_accepted():
+    """The limit is a byte count, so the boundary case needs multi-byte text --
+    the character caps alone cannot reach it with ASCII."""
+    from app.domain.models import MAX_REQUEST_BYTES, MAX_TRANSCRIPT_CHARS
+
+    two_byte = "é"
+    assert len(two_byte.encode()) == 2
+    remaining = (MAX_REQUEST_BYTES - MAX_TRANSCRIPT_CHARS * 2) // 2
+
+    request = ScreenRequest(
+        transcript=two_byte * MAX_TRANSCRIPT_CHARS,
+        job_description=two_byte * remaining,
+    )
+
+    encoded = len(request.transcript.encode()) + len(request.job_description.encode())
+    assert encoded == MAX_REQUEST_BYTES

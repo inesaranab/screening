@@ -5,7 +5,8 @@ the system scaling to zero, and it is what KEDA scales the worker on.
 
 The request travels inside the message. An unredacted transcript therefore
 exists only while the work is outstanding and is destroyed when the message is
-deleted; nothing persists it.
+deleted; nothing persists it. A message that is never processed expires instead,
+so the transcript's lifetime is bounded even when no worker completes the job.
 
 Authentication is by managed identity; no storage key is read or configured.
 """
@@ -16,11 +17,17 @@ from typing import Any, Protocol
 from app.domain.models import ScreenRequest
 from app.ports.job_queue import QueuedJob
 
+# How long a published message may remain readable. The message carries the
+# unredacted transcript, so its lifetime is how long that text can exist outside
+# a running screening. Azure's own default is measured in days; this is set to
+# comfortably outlast a screening and the retries it is allowed, and no more.
+MESSAGE_TTL_SECONDS = 4 * 60 * 60
+
 
 class QueueClientLike(Protocol):
     """The subset of ``azure.storage.queue.aio.QueueClient`` this adapter uses."""
 
-    async def send_message(self, content: str) -> Any: ...
+    async def send_message(self, content: str, **kwargs: Any) -> Any: ...
 
     def receive_messages(self, **kwargs: Any) -> Any: ...
 
@@ -83,8 +90,14 @@ class AzureJobQueue:
         self._visibility_timeout = visibility_timeout
 
     async def enqueue(self, job_id: str, request: ScreenRequest) -> None:
-        """Publish a job. See ``JobQueue.enqueue``."""
-        await self._client.send_message(encode_message(job_id, request))
+        """Publish a job. See ``JobQueue.enqueue``.
+
+        The message is given a bounded lifetime, so one that is never processed
+        expires rather than remaining readable indefinitely.
+        """
+        await self._client.send_message(
+            encode_message(job_id, request), time_to_live=MESSAGE_TTL_SECONDS
+        )
 
     async def receive(self) -> QueuedJob | None:
         """Take the next job, or None. See ``JobQueue.receive``."""
@@ -92,7 +105,12 @@ class AzureJobQueue:
             messages_per_page=1, visibility_timeout=self._visibility_timeout
         ):
             job_id, request = decode_message(message.content)
-            return QueuedJob(job_id=job_id, request=request, receipt=message)
+            return QueuedJob(
+                job_id=job_id,
+                request=request,
+                receipt=message,
+                delivery_count=getattr(message, "dequeue_count", 1) or 1,
+            )
         return None
 
     async def delete(self, job: QueuedJob) -> None:

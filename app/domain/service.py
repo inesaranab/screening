@@ -70,9 +70,14 @@ class ScreenService:
         Performs no screening. The guardrail and model are not called.
 
         The job is recorded before it is published, so a worker can never
-        receive an id that has no corresponding job. A job that cannot be
-        published is marked failed rather than left pending, so no record
-        claims to be waiting on work that was never handed to anyone.
+        receive an id that has no corresponding job.
+
+        A publish that raises leaves the job PENDING. The failure is ambiguous:
+        the queue may have accepted the message before the error surfaced, in
+        which case a worker will still perform the screening. Recording FAILED
+        would then be contradicted by a result arriving afterwards, and a
+        status that a later event can contradict is worse than one that is
+        merely incomplete.
 
         Args:
             request: The transcript and job description to assess.
@@ -81,18 +86,30 @@ class ScreenService:
             The job id, to be passed to ``result``.
 
         Raises:
-            Exception: Whatever publishing raised, after the job is marked
-                failed.
+            Exception: Whatever publishing raised. The caller therefore never
+                receives an id for a job that may not run.
         """
         job_id = uuid.uuid4().hex
         await self._jobs.create(job_id)
         try:
             await self._queue.enqueue(job_id, request)
-        except Exception as exc:
+        except Exception:
             logger.exception("enqueue_failed", extra={"context": {"job": job_id}})
-            await self._jobs.fail(job_id, type(exc).__name__)
             raise
         return job_id
+
+    async def abandon(self, job_id: str, reason: str) -> None:
+        """Record a job as failed without attempting it.
+
+        For work that cannot be completed however many times it is tried, where
+        another attempt would repeat the failure rather than resolve it.
+
+        Args:
+            job_id: The id returned by ``start``.
+            reason: Why the job was given up on. Must not quote the transcript.
+        """
+        logger.warning("job_abandoned", extra={"context": {"job": job_id}})
+        await self._jobs.fail(job_id, reason)
 
     async def run(self, job_id: str, request: ScreenRequest) -> None:
         """Perform the screening and store its outcome against the job.

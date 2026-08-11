@@ -82,3 +82,50 @@ async def test_a_failed_screening_still_removes_the_message():
     assert job is not None
     assert job.status is JobStatus.FAILED
     assert await queue.receive() is None
+
+
+@pytest.mark.asyncio
+async def test_a_repeatedly_redelivered_job_is_abandoned_rather_than_retried():
+    """A message that keeps coming back is one no worker can finish. Screening
+    it again repeats the failure and keeps the unredacted transcript alive on
+    the queue, so it is recorded as failed and removed instead."""
+    from app.ports.job_queue import QueuedJob
+    from app.worker import MAX_DELIVERIES, drain
+
+    store = InMemoryJobStore()
+    job_id = "poisoned"
+    await store.create(job_id)
+
+    class RedeliveringQueue:
+        def __init__(self):
+            self.deleted = []
+            self._left = 1
+
+        async def enqueue(self, job_id: str, request: ScreenRequest) -> None:
+            raise AssertionError("draining must not publish")
+
+        async def receive(self):
+            if not self._left:
+                return None
+            self._left -= 1
+            return QueuedJob(
+                job_id=job_id, request=_REQ, delivery_count=MAX_DELIVERIES + 1
+            )
+
+        async def delete(self, job):
+            self.deleted.append(job.job_id)
+
+    class BrokenGuardrail:
+        async def scrub(self, text: str):
+            raise AssertionError("an abandoned job must not be screened")
+
+    queue = RedeliveringQueue()
+    service = _service(store, queue, guardrail=BrokenGuardrail())
+
+    processed = await drain(service, queue)
+
+    assert processed == 0
+    assert queue.deleted == [job_id]
+    job = await store.get(job_id)
+    assert job is not None
+    assert job.status is JobStatus.FAILED

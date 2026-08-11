@@ -1,8 +1,15 @@
 from app.config import Settings
 
 
-def test_llm_guardrail_settings_have_defaults():
-    settings = Settings()
+def test_llm_guardrail_settings_have_defaults(monkeypatch):
+    """Asserting a default requires nothing to be overriding it. Settings reads
+    a .env file and SCREENING_ variables, either of which would otherwise make
+    this assert the host's configuration instead of the declared default."""
+    for name in ("SCREENING_LLM_GUARDRAIL_BASE_URL", "SCREENING_LLM_GUARDRAIL_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings(_env_file=None)
+
     assert settings.llm_guardrail_base_url == "http://localhost:8001/v1"
     assert settings.llm_guardrail_model == "google/gemma-4-31B-it"
 

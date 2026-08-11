@@ -128,3 +128,44 @@ async def test_an_unknown_job_is_404(service):
         r = await c.get("/screen/never-created")
 
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_storage_failure_on_submission_is_503():
+    """The screening was never accepted, and the cause is the storage account
+    rather than the request. 503 tells the caller to retry; 500 would suggest
+    the request itself was at fault."""
+    from azure.core.exceptions import ServiceRequestError
+
+    class UnreachableStorage(FakeService):
+        async def start(self, request: ScreenRequest) -> str:
+            raise ServiceRequestError("queue unreachable")
+
+    app.dependency_overrides[get_service] = lambda: UnreachableStorage()
+    app.dependency_overrides[require_api_key] = lambda: None
+    try:
+        async with await _client() as c:
+            r = await c.post("/screen", json=_BODY)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert r.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_a_programming_error_on_submission_is_not_masked_as_503():
+    """503 claims the dependency is at fault and the request may be retried.
+    A bug in our own code is neither, so it must not be reported as one."""
+
+    class BuggyService(FakeService):
+        async def start(self, request: ScreenRequest) -> str:
+            raise TypeError("wrong argument")
+
+    app.dependency_overrides[get_service] = lambda: BuggyService()
+    app.dependency_overrides[require_api_key] = lambda: None
+    try:
+        async with await _client() as c:
+            with pytest.raises(TypeError):
+                await c.post("/screen", json=_BODY)
+    finally:
+        app.dependency_overrides.clear()

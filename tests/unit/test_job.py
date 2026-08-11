@@ -53,3 +53,29 @@ def test_an_unknown_status_is_rejected():
     read as neither done nor failed. The enum makes that a validation error."""
     with pytest.raises(ValidationError):
         Job(id="abc123", status="compelte")
+
+
+def test_a_done_job_without_a_result_is_rejected():
+    """DONE is what tells a poller to stop and read the answer. A DONE job with
+    no result sends it to read nothing."""
+    with pytest.raises(ValidationError):
+        Job(id="abc123", status=JobStatus.DONE)
+
+
+def test_a_failed_job_carrying_a_result_is_rejected():
+    """FAILED means no assessment was produced. Carrying one contradicts the
+    status, and which of the two a reader trusts is undefined."""
+    with pytest.raises(ValidationError):
+        Job(
+            id="abc123",
+            status=JobStatus.FAILED,
+            error="Timeout",
+            result=_a_result(),
+        )
+
+
+def test_a_pending_job_carrying_an_outcome_is_rejected():
+    """PENDING means the work is outstanding. An outcome attached to it is
+    either a leftover from a previous attempt or a bug."""
+    with pytest.raises(ValidationError):
+        Job(id="abc123", status=JobStatus.PENDING, error="Timeout")
