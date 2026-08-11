@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "WebSearch|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"systemMessage\":\"Scope check - what decision does this research change? If there is no answer, it is a bookmark (INE-18), not a task. Current objective: .claude/FOCUS.md\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/inesarana/screening/.codex/hooks/conventions_reminder.py' 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" 2>/dev/null; python3 -c \"import json,pathlib;print(json.dumps({'hookSpecificOutput':{'hookEventName':'SessionStart','additionalContext':pathlib.Path('.claude/FOCUS.md').read_text()}}))\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,time,pathlib;f=pathlib.Path('/tmp/.claude_last_prompt');now=time.time();prev=float(f.read_text()) if f.exists() else now;f.write_text(str(now));g=int(now-prev);print(json.dumps({'hookSpecificOutput':{'hookEventName':'UserPromptSubmit','additionalContext':'[clock] '+time.strftime('%H:%M')+' | '+str(g//60)+'m '+str(g%60)+'s since previous message'}}))\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "python3 '/Users/inesarana/screening/.codex/hooks/response_style.py' 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
