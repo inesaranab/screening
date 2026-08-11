@@ -129,3 +129,28 @@ async def test_a_repeatedly_redelivered_job_is_abandoned_rather_than_retried():
     job = await store.get(job_id)
     assert job is not None
     assert job.status is JobStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_a_job_is_not_screened_while_the_detector_is_unreachable():
+    """Screening without the detector would spend the platform's whole request
+    budget failing. The job is recorded as failed and its message removed, so
+    the outcome is an answer rather than a retry that fails identically."""
+    store, queue = InMemoryJobStore(), InMemoryJobQueue()
+
+    class BrokenGuardrail:
+        async def scrub(self, text: str):
+            raise AssertionError("must not screen without a detector")
+
+    service = _service(store, queue, guardrail=BrokenGuardrail())
+    job_id = await service.start(_REQ)
+
+    async def never_ready() -> bool:
+        return False
+
+    processed = await drain(service, queue, detector_ready=never_ready)
+
+    assert processed == 0
+    job = await store.get(job_id)
+    assert job is not None
+    assert job.status is JobStatus.FAILED

@@ -366,6 +366,47 @@ storage account is already there; Table Storage is the cheap fit. The background
 to outlive the request, which means either `minReplicas: 1` on the CPU app or a queue-triggered
 Container Apps Job like `download-weights`.
 
+### The 240s limit applies to INTERNAL ingress too
+
+Moving the caller off the HTTP path is not sufficient. The worker still reaches the detector
+over HTTP, and that hop crosses ingress as well — internal ingress is still ingress. The first
+end-to-end run in production failed on exactly this:
+
+```
+13:32:48  worker_job_started
+13:32:50  guardrail begins           <- the call to screening-gemma
+13:36:50  API call failed on attempt 1: stream timeout
+```
+
+13:32:50 to 13:36:50 is 240 seconds to the second. `llm_guardrail_timeout_s: 900` never
+applies, because the proxy severs the connection first — the same way `requestTimeout: 900`
+never applied on the public side.
+
+The lesson generalises past this project: **removing the wait from one hop does not remove it
+from the next.** Somebody was still holding a connection open across a 13-minute cold start,
+and the platform does not care which process is waiting, only how long.
+
+The fix is to never let one request span the cold start. Poll the detector's `/models`
+endpoint with short requests until it answers, then send the inference to a warm server, where
+it returns in seconds. Many brief calls instead of one long one — the same shape as `202 +
+poll`, applied one layer down.
+
+### Cost scales with wake-ups, not with screenings
+
+The GPU bills for its cold start whether or not the caller survives it, so the unit of cost is
+a wake-up:
+
+| Pattern | Approximate cost |
+|---|---|
+| One screening | ~€1.00 (13 min load + 15 min cooldown at €2.16/hr) |
+| Fifty screenings in one burst | ~€2.00 — one wake, then seconds each while warm |
+| Fifty screenings spread over a week | ~€50 — each pays for its own wake |
+
+Identical work, 25× the cost, decided entirely by arrival pattern. Serverless GPU is cheap for
+bursty load and expensive for a steady trickle. The levers are `cooldownPeriod` (longer merges
+more bursts) and deliberate batching (screen on a schedule rather than on arrival); both buy
+money with latency.
+
 This is also the shape that makes batch natural: submit N transcripts, pay one cold start,
 amortize it. At 50 transcripts a 13-minute boot is ~15s each; at one transcript it is absurd.
 
