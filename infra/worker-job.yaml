@@ -88,6 +88,10 @@ properties:
           - name: SCREENING_PORTKEY_VIRTUAL_KEY
             value: screening-openrouter
           ## The detector's address, resolvable only inside this environment.
+          ## MUST be https. The detector's ingress sets allowInsecure false, so
+          ## a plain HTTP request is answered with a redirect, and a client
+          ## following a 301 turns a POST into a GET -- the endpoint then
+          ## rejects it with 405 rather than doing the work.
           - name: SCREENING_LLM_GUARDRAIL_BASE_URL
             value: ${GEMMA_URL}
           ## Names which identity DefaultAzureCredential should use, since the
