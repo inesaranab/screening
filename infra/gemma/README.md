@@ -372,7 +372,7 @@ Moving the caller off the HTTP path is not sufficient. The worker still reaches 
 over HTTP, and that hop crosses ingress as well — internal ingress is still ingress. The first
 end-to-end run in production failed on exactly this:
 
-```
+```text
 13:32:48  worker_job_started
 13:32:50  guardrail begins           <- the call to screening-gemma
 13:36:50  API call failed on attempt 1: stream timeout

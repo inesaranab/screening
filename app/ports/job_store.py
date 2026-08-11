@@ -60,3 +60,21 @@ class JobStore(Protocol):
                 data: the store outlives the request and nothing scrubs it.
         """
         ...
+
+    async def fail_if_pending(self, job_id: str, error: str) -> bool:
+        """Record a failure only while the job is still outstanding.
+
+        One operation, not a read followed by a write. A job can be completed
+        between those two, and the failure would then replace an answer the
+        caller may already have read.
+
+        Args:
+            job_id: The handle given out at creation.
+            error: Why it failed, written for an operator. Never candidate
+                data: the store outlives the request and nothing scrubs it.
+
+        Returns:
+            True if the job was still pending and is now failed. False if it
+            had already finished, or does not exist.
+        """
+        ...

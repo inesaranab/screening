@@ -94,3 +94,33 @@ async def test_http_probe_is_ready_only_on_a_200():
     assert ok.requested == "http://detector/v1/models"
 
     assert not await http_probe(_Client(503), "http://detector/v1/models")()
+
+
+@pytest.mark.asyncio
+async def test_time_spent_probing_counts_against_the_deadline():
+    """A probe against an unreachable endpoint consumes its own timeout before
+    failing. Counting only the sleeps would let the total run to a multiple of
+    the deadline, past the point at which the caller's own limits apply."""
+    clock = {"t": 0.0}
+    probes = 0
+
+    async def probe() -> bool:
+        nonlocal probes
+        probes += 1
+        clock["t"] += 30.0  # the probe's own timeout elapses
+        return False
+
+    async def sleep(seconds: float) -> None:
+        clock["t"] += seconds
+
+    ready = await wait_until_ready(
+        probe,
+        deadline_s=100,
+        interval_s=10,
+        sleep=sleep,
+        now=lambda: clock["t"],
+    )
+
+    assert not ready
+    assert clock["t"] <= 100 + 30
+    assert probes <= 3

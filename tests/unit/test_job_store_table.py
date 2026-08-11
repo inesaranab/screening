@@ -5,6 +5,7 @@ this file covers the mapping, which is pure.
 """
 
 import json
+from collections.abc import Awaitable, Callable
 
 import pytest
 
@@ -81,6 +82,13 @@ class _FakeTableClient:
 
     def __init__(self) -> None:
         self.entities: dict[str, dict] = {}
+        self._version = 0
+        self.on_read: Callable[[], Awaitable[None]] | None = None
+
+    def _stamp(self, row_key: str) -> None:
+        """Give the row a new etag, as any write to it does."""
+        self._version += 1
+        self.entities[row_key]["etag"] = f"W/\"{self._version}\""
 
     async def upsert_entity(self, entity: dict, **kwargs) -> None:
         """Merge into the stored row, as UpdateMode.MERGE does.
@@ -89,13 +97,38 @@ class _FakeTableClient:
         adapter deliberately leaves out of an update.
         """
         self.entities.setdefault(entity["RowKey"], {}).update(entity)
+        self._stamp(entity["RowKey"])
+
+    async def update_entity(self, entity: dict, **kwargs) -> None:
+        """Merge only while the row still carries the etag the caller read.
+
+        Models the conditional write the service depends on: without it a test
+        double would accept a stale write that real Table Storage rejects.
+        """
+        from azure.core.exceptions import ResourceModifiedError
+
+        row_key = entity["RowKey"]
+        stored = self.entities.get(row_key)
+        if stored is None:
+            from azure.core.exceptions import ResourceNotFoundError
+
+            raise ResourceNotFoundError("no such entity")
+        if kwargs.get("etag") is not None and kwargs["etag"] != stored.get("etag"):
+            raise ResourceModifiedError("etag mismatch")
+        stored.update(entity)
+        self._stamp(row_key)
 
     async def get_entity(self, partition_key: str, row_key: str) -> dict:
         from azure.core.exceptions import ResourceNotFoundError
 
         if row_key not in self.entities:
             raise ResourceNotFoundError("no such entity")
-        return self.entities[row_key]
+        entity = dict(self.entities[row_key])
+        if self.on_read is not None:
+            # Lets a test interleave another writer between a read and the
+            # write that depends on it.
+            await self.on_read()
+        return entity
 
 
 @pytest.fixture
@@ -186,3 +219,39 @@ async def test_failing_a_job_keeps_when_it_was_accepted():
     stored = await store.get("abc123")
     assert stored is not None
     assert stored.created_at == accepted.created_at
+
+
+@pytest.mark.asyncio
+async def test_fail_if_pending_loses_to_a_completion_that_lands_first():
+    """The check and the write are one conditional operation. A worker that
+    completes the job between them changes the row, and the conditional write
+    is then refused rather than replacing the result."""
+    client = _FakeTableClient()
+    store = AzureTableJobStore(client)
+    await store.create("abc123")
+
+    async def complete_between_read_and_write() -> None:
+        client.on_read = None
+        await store.complete("abc123", _a_result())
+
+    client.on_read = complete_between_read_and_write
+
+    settled = await store.fail_if_pending("abc123", "TooManyDeliveries")
+
+    assert settled is False
+    job = await store.get("abc123")
+    assert job is not None
+    assert job.status is JobStatus.DONE
+
+
+@pytest.mark.asyncio
+async def test_fail_if_pending_settles_a_job_still_pending():
+    client = _FakeTableClient()
+    store = AzureTableJobStore(client)
+    await store.create("abc123")
+
+    assert await store.fail_if_pending("abc123", "TooManyDeliveries") is True
+
+    job = await store.get("abc123")
+    assert job is not None
+    assert job.status is JobStatus.FAILED

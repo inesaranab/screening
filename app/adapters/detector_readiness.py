@@ -5,6 +5,7 @@ ingress closes any single request long before that, so readiness is established
 by repeating a short request rather than by holding one open.
 """
 
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -39,8 +40,14 @@ async def wait_until_ready(
     deadline_s: float,
     interval_s: float,
     sleep: Callable[[float], Awaitable[None]],
+    now: Callable[[], float] = time.monotonic,
 ) -> bool:
     """Repeat a readiness probe until it succeeds or the deadline passes.
+
+    The deadline covers elapsed time, not time spent sleeping. A probe against
+    an endpoint that is not listening consumes its own timeout before failing,
+    so counting only the intervals would let the total reach a multiple of the
+    deadline.
 
     Args:
         probe: Returns True once the detector is serving.
@@ -48,11 +55,13 @@ async def wait_until_ready(
         interval_s: Seconds between attempts.
         sleep: Suspends for the given seconds. Injected so tests need no real
             time.
+        now: Reads a monotonic clock, one that only moves forward and is
+            unaffected by the system clock being adjusted.
 
     Returns:
         True if the detector became ready, False if the deadline passed first.
     """
-    waited = 0.0
+    started = now()
     while True:
         try:
             ready = await probe()
@@ -64,7 +73,6 @@ async def wait_until_ready(
             ready = False
         if ready:
             return True
-        if waited + interval_s > deadline_s:
+        if now() - started + interval_s > deadline_s:
             return False
         await sleep(interval_s)
-        waited += interval_s

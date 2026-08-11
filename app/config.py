@@ -20,9 +20,11 @@ class Settings(BaseSettings):
         llm_guardrail_model: Model name to request at that endpoint.
         llm_timeout_s: Per-request timeout for the assessment LLM, in seconds.
         llm_guardrail_timeout_s: Per-request timeout for the guardrail endpoint.
-            Deliberately separate and much larger: that endpoint scales to zero,
-            so the first request after an idle period waits for a GPU to start
-            and load the model.
+            Separate from the assessment timeout because that endpoint runs a
+            larger model, and bounded below the platform's own request limit so
+            it can actually fire. It does not cover the endpoint starting from
+            zero; readiness is established by repeated probes before any
+            screening runs.
         jobs_account_url: Table endpoint of the account holding job state.
         jobs_queue_url: Queue endpoint of the same account.
         jobs_table_name: Table holding one entity per screening job.
