@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Protocol
 
 from azure.core.exceptions import ResourceNotFoundError
+from azure.data.tables import UpdateMode
 
 from app.domain.models import Job, JobStatus, ScreenResult
 
@@ -22,7 +23,7 @@ class TableClientLike(Protocol):
     depending on the concrete SDK type.
     """
 
-    async def upsert_entity(self, entity: dict) -> object: ...
+    async def upsert_entity(self, entity: dict, **kwargs: object) -> object: ...
 
     async def get_entity(self, partition_key: str, row_key: str) -> dict: ...
 
@@ -119,12 +120,39 @@ class AzureTableJobStore:
 
     async def complete(self, job_id: str, result: ScreenResult) -> None:
         """Record a finished screening. See ``JobStore.complete``."""
-        await self._table.upsert_entity(
-            job_to_entity(Job(id=job_id, status=JobStatus.DONE, result=result))
-        )
+        await self._settle(job_id, JobStatus.DONE, result=result.model_dump_json())
 
     async def fail(self, job_id: str, error: str) -> None:
         """Record a failed screening. See ``JobStore.fail``."""
+        await self._settle(job_id, JobStatus.FAILED, error=error)
+
+    async def _settle(
+        self,
+        job_id: str,
+        status: JobStatus,
+        *,
+        result: str = "",
+        error: str = "",
+    ) -> None:
+        """Move a job out of PENDING.
+
+        Writes only the properties that change. ``created_at`` is left out, so
+        the merge keeps the time the job was accepted rather than replacing it
+        with the time it finished.
+
+        Args:
+            job_id: The handle given out at creation.
+            status: DONE or FAILED.
+            result: The serialised assessment, when completing.
+            error: Why it failed, when failing.
+        """
         await self._table.upsert_entity(
-            job_to_entity(Job(id=job_id, status=JobStatus.FAILED, error=error))
+            {
+                "PartitionKey": job_id,
+                "RowKey": job_id,
+                "status": status.value,
+                "result": result,
+                "error": error,
+            },
+            mode=UpdateMode.MERGE,
         )

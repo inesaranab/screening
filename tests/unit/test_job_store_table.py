@@ -82,8 +82,13 @@ class _FakeTableClient:
     def __init__(self) -> None:
         self.entities: dict[str, dict] = {}
 
-    async def upsert_entity(self, entity: dict) -> None:
-        self.entities[entity["RowKey"]] = entity
+    async def upsert_entity(self, entity: dict, **kwargs) -> None:
+        """Merge into the stored row, as UpdateMode.MERGE does.
+
+        A double that replaced the row would hide the loss of any property the
+        adapter deliberately leaves out of an update.
+        """
+        self.entities.setdefault(entity["RowKey"], {}).update(entity)
 
     async def get_entity(self, partition_key: str, row_key: str) -> dict:
         from azure.core.exceptions import ResourceNotFoundError
@@ -152,3 +157,32 @@ async def test_fail_stores_the_error_and_no_result(store):
     assert job.status is JobStatus.FAILED
     assert job.error == "ConnectionError"
     assert job.result is None
+
+
+@pytest.mark.asyncio
+async def test_settling_a_job_keeps_when_it_was_accepted():
+    """created_at records acceptance. Rewriting it on completion would make it
+    mean acceptance for pending jobs and settlement for finished ones, so a row
+    could not be read without knowing its status first."""
+    client = _FakeTableClient()
+    store = AzureTableJobStore(client)
+
+    accepted = await store.create("abc123")
+    await store.complete("abc123", _a_result())
+
+    stored = await store.get("abc123")
+    assert stored is not None
+    assert stored.created_at == accepted.created_at
+
+
+@pytest.mark.asyncio
+async def test_failing_a_job_keeps_when_it_was_accepted():
+    client = _FakeTableClient()
+    store = AzureTableJobStore(client)
+
+    accepted = await store.create("abc123")
+    await store.fail("abc123", "Timeout")
+
+    stored = await store.get("abc123")
+    assert stored is not None
+    assert stored.created_at == accepted.created_at

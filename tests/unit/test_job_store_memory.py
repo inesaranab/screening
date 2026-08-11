@@ -82,3 +82,17 @@ async def test_jobs_do_not_leak_into_each_other(store):
     second = await store.get("second")
     assert second is not None
     assert second.status is JobStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_settling_a_job_keeps_when_it_was_accepted():
+    """The same property the Azure store holds: the two are interchangeable
+    only if settling preserves acceptance time in both."""
+    store = InMemoryJobStore()
+    accepted = await store.create("abc123")
+
+    await store.complete("abc123", _a_result())
+
+    stored = await store.get("abc123")
+    assert stored is not None
+    assert stored.created_at == accepted.created_at

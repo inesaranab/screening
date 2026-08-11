@@ -66,6 +66,8 @@ class InMemoryJobStore:
             error: Why it failed, when failing.
         """
         async with self._lock:
-            self._jobs[job_id] = Job(
-                id=job_id, status=status, result=result, error=error
-            )
+            settled = Job(id=job_id, status=status, result=result, error=error)
+            existing = self._jobs.get(job_id)
+            if existing is not None:
+                settled = settled.model_copy(update={"created_at": existing.created_at})
+            self._jobs[job_id] = settled
