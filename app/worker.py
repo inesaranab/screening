@@ -136,7 +136,11 @@ async def main() -> None:
 
     # The first request also activates the detector, since it scales to zero,
     # so probing both starts it and establishes when it is usable.
-    http = httpx.AsyncClient(timeout=DETECTOR_PROBE_TIMEOUT_S)
+    # follow_redirects, because the detector's ingress refuses plain HTTP and
+    # answers with a redirect to HTTPS. A client that does not follow it sees a
+    # non-200 forever, and the redirect alone does not start an app scaled to
+    # zero, so the endpoint would never become reachable.
+    http = httpx.AsyncClient(timeout=DETECTOR_PROBE_TIMEOUT_S, follow_redirects=True)
     probe = http_probe(http, f"{settings.llm_guardrail_base_url.rstrip('/')}/models")
 
     async def detector_ready() -> bool:
