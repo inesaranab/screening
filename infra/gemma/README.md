@@ -391,6 +391,24 @@ endpoint with short requests until it answers, then send the inference to a warm
 it returns in seconds. Many brief calls instead of one long one — the same shape as `202 +
 poll`, applied one layer down.
 
+### The detector's address must be https
+
+`screening-gemma` has `allowInsecure: false`, so its ingress does not serve plain
+HTTP — it answers with a redirect to HTTPS. That produces two different failures
+depending on what the caller does with the redirect, and neither names its cause:
+
+| Caller | Behaviour | Symptom |
+|---|---|---|
+| Does not follow redirects | Sees a non-200 forever | Endpoint reported unreachable, and the redirect alone does not start an app scaled to zero, so it never becomes reachable |
+| Follows a 301 | The redirect rewrites POST as GET | `405 Method Not Allowed` from an endpoint that only accepts POST |
+
+The second is the more misleading: the URL is right, the client is working, the
+request arrives — and the verb has been changed underneath it by the transport.
+
+Use `https://` in `SCREENING_LLM_GUARDRAIL_BASE_URL` and neither arises. Internal
+ingress terminates TLS inside the environment, so this costs nothing and the
+traffic still never leaves it.
+
 ### Cost scales with wake-ups, not with screenings
 
 The GPU bills for its cold start whether or not the caller survives it, so the unit of cost is
