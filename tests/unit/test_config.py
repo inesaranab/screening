@@ -34,3 +34,28 @@ def test_jobs_storage_defaults_point_at_the_general_purpose_account():
     assert "screeningjobs" in Settings.model_fields["jobs_account_url"].default
     assert Settings.model_fields["jobs_table_name"].default
     assert Settings.model_fields["jobs_queue_name"].default
+
+
+def test_a_plain_http_detector_address_is_refused():
+    """The detector's ingress answers plain HTTP with a redirect rather than
+    serving it, and a client following that redirect turns the POST into a GET,
+    which the endpoint rejects with 405. Readiness still passes -- the probe
+    follows the redirect and gets a 200 -- so the failure arrives only after a
+    cold start has been paid for."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(llm_guardrail_base_url="http://screening-gemma.internal.example/v1")
+
+
+def test_a_local_http_detector_address_is_allowed():
+    """A detector served on localhost has no ingress in front of it, so the
+    scheme carries none of the same risk."""
+    from app.config import Settings
+
+    settings = Settings(llm_guardrail_base_url="http://localhost:8001/v1")
+
+    assert settings.llm_guardrail_base_url.startswith("http://")
