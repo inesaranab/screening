@@ -1,8 +1,9 @@
 """Configuration and secrets supplied by the environment."""
 
 from typing import Annotated
+from urllib.parse import urlparse
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -66,6 +67,38 @@ class Settings(BaseSettings):
     service_api_key: Annotated[str, Field(min_length=1)]
     portkey_api_key: str = ""
     portkey_virtual_key: str = ""
+
+    @field_validator("llm_guardrail_base_url")
+    @classmethod
+    def _remote_detector_must_be_https(cls, url: str) -> str:
+        """Refuse a remote detector address that is not https.
+
+        A detector behind ingress that refuses plain HTTP answers it with a
+        redirect. Readiness still passes, because the probe follows the
+        redirect and receives a 200, so the worker wakes the GPU and only then
+        fails every screening: following a redirect turns the guardrail's POST
+        into a GET, which the endpoint rejects. Refusing the address at startup
+        costs a clear error instead of a cold start.
+
+        A local address is exempt, having no ingress in front of it.
+
+        Args:
+            url: The configured detector address.
+
+        Returns:
+            The address, unchanged.
+
+        Raises:
+            ValueError: The address is remote and does not use https.
+        """
+        host = urlparse(url).hostname or ""
+        if host in ("localhost", "127.0.0.1", "::1"):
+            return url
+        if not url.startswith("https://"):
+            raise ValueError(
+                f"llm_guardrail_base_url must be https for a remote host, got {url!r}"
+            )
+        return url
 
 
 settings = Settings()  # type: ignore[call-arg]

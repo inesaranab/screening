@@ -341,8 +341,14 @@ patient. Both fixes were needed for different reasons and neither solves this on
 
 **Calling by app name instead of FQDN does not help.** The docs say calls by app name go
 "directly to app B" while FQDN calls route via the edge proxy, so this looked like a free fix.
-Tested: `http://screening-gemma/v1/models` resolves, routes, and *does* trigger the cold start
+Tested: `https://screening-gemma/v1/models` resolves, routes, and *does* trigger the cold start
 — then dies at exactly 240s with the same 504. The timeout applies either way.
+
+The scheme has to be `https`. The original test used `urllib.request.urlopen`, which follows
+redirects, so an `http://` address in that command reached the detector over HTTPS anyway and
+the cold start it triggered was credited to the wrong scheme. A client that does *not* follow
+redirects gets only the redirect, which starts nothing. See "The detector's address must be
+https" below.
 
 **Premium ingress can raise it** (idle request timeout, 4–30 min) but requires a non-Consumption
 workload profile, D4–D32, minimum two node instances, billed continuously. That removes the
@@ -409,6 +415,10 @@ Use `https://` in `SCREENING_LLM_GUARDRAIL_BASE_URL` and neither arises. Interna
 ingress terminates TLS inside the environment, so this costs nothing and the
 traffic still never leaves it.
 
+`Settings` refuses a remote address that is not `https`, so a wrong scheme is a
+startup error rather than a cold start followed by a 405. Localhost is exempt,
+having no ingress in front of it.
+
 ### Cost scales with wake-ups, not with screenings
 
 The GPU bills for its cold start whether or not the caller survives it, so the unit of cost is
@@ -437,7 +447,7 @@ az containerapp update -n screening-app -g screening-rg --min-replicas 1   # rem
 az containerapp exec -n screening-app -g screening-rg --command /bin/sh
 ```
 ```sh
-date; python -c "import urllib.request,time; t=time.time(); r=urllib.request.urlopen('http://screening-gemma/v1/models',timeout=1800).read().decode(); print(round(time.time()-t),'s')"; date
+date; python -c "import urllib.request,time; t=time.time(); r=urllib.request.urlopen('https://screening-gemma/v1/models',timeout=1800).read().decode(); print(round(time.time()-t),'s')"; date
 ```
 
 The two `date` stamps bracket the failure. Anything at ~240s is the proxy, not the app.
