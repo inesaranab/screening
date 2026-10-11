@@ -6,6 +6,9 @@ consumed by `LLMGuardrailRecognizer` in the main app.
 Read the "Deployment topology" section of the repo README first — it explains *why*
 this is a separate container and why its ingress is internal.
 
+**Taken down on 2026-10-11.** The sections below describe the deployment as it ran; none of
+these resources exist now. `infra/REBUILD.md` says how to build it again.
+
 ## State as of 2026-08-10
 
 | # | Step | Status |

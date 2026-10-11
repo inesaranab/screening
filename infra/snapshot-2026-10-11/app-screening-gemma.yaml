@@ -1,0 +1,47 @@
+# Exported 2026-10-11, after the subscription was disabled. The app had already lost its
+# container, so `template` and most of `configuration` are null: this file records the
+# resource's name, environment and workload profile only. Its settings come from the
+# templates in this repository -- see ../REBUILD.md.
+# The template that ran is ../gemma/vllm-app.yaml.
+id: /subscriptions/c226c9ff-22c8-43d1-986b-b0ccdc8924e7/resourceGroups/screening-rg/providers/Microsoft.App/containerapps/screening-gemma
+location: Sweden Central
+name: screening-gemma
+properties:
+  configuration:
+    activeRevisionsMode: null
+    dapr: null
+    identitySettings: []
+    ingress: null
+    maxInactiveRevisions: null
+    registries: null
+    revisionTransitionThreshold: null
+    runtime: null
+    secrets: null
+    service: null
+    targetLabel: null
+  customDomainVerificationId: 8DAFF89143F68B74530412346252E9849DEC946C35661D8BEE9450FF6AACC62F
+  deploymentErrors: ContainerAppNotFoundInCluster
+  environmentId: /subscriptions/c226c9ff-22c8-43d1-986b-b0ccdc8924e7/resourceGroups/screening-rg/providers/Microsoft.App/managedEnvironments/screening-env-swe
+  managedEnvironmentId: /subscriptions/c226c9ff-22c8-43d1-986b-b0ccdc8924e7/resourceGroups/screening-rg/providers/Microsoft.App/managedEnvironments/screening-env-swe
+  outboundIpAddresses: []  # 1 address removed: the environment's shared egress pool, assigned by Azure, not rebuilt
+  patchingMode: Automatic
+  provisioningState: Failed
+  template:
+    containers: null
+    customMetricsSettings: null
+    initContainers: null
+    revisionSuffix: null
+    scale: null
+    serviceBinds: null
+    terminationGracePeriodSeconds: null
+    volumes: null
+  workloadProfileName: gpu-a100
+resourceGroup: screening-rg
+systemData:
+  createdAt: '2026-08-09T15:36:29.7027121'
+  createdBy: inesaranabach@gmail.com
+  createdByType: User
+  lastModifiedAt: '2026-08-11T07:10:28.2995084'
+  lastModifiedBy: inesaranabach@gmail.com
+  lastModifiedByType: User
+type: Microsoft.App/containerApps

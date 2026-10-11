@@ -1,0 +1,18 @@
+WARNING: Export template operation completed with errors. Some resources were not exported. Please see details for more information.
+ERROR: Could not get resources of the type 'Microsoft.OperationalInsights/workspaces/dataSources'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.App/managedEnvironments/httpRouteConfigs'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.KeyVault/vaults/keys'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.CognitiveServices/accounts/computes'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.CognitiveServices/accounts/testRaiExternalSafetyProvider'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/localUsers'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/blobServices'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/fileServices'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/queueServices'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/tableServices'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/encryptionScopes'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/inventoryPolicies'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/advancedPlatformMetrics'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.Storage/storageAccounts/privateEndpointConnections'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.RecoveryServices/vaults/certificates'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.RecoveryServices/vaults/extendedInformation'. Resources of this type will not be exported.
+ERROR: Could not get resources of the type 'Microsoft.RecoveryServices/vaults/backupCrossTenantVaultMappings'. Resources of this type will not be exported.
