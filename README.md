@@ -461,3 +461,7 @@ open through it.
 
 Infrastructure lives in `infra/gemma/` for the detector and `infra/worker-job.yaml` for the
 worker.
+
+**The Azure deployment was taken down on 2026-10-11** to stop its idle cost; `infra/REBUILD.md` says
+how to build it again. Until then the prod tests (`--run-prod`) have no endpoint to hit, and the URL
+in `tests/integration/test_prod.py` belongs to the old environment.

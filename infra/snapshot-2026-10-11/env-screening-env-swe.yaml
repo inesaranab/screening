@@ -1,0 +1,61 @@
+id: /subscriptions/c226c9ff-22c8-43d1-986b-b0ccdc8924e7/resourceGroups/screening-rg/providers/Microsoft.App/managedEnvironments/screening-env-swe
+location: Sweden Central
+name: screening-env-swe
+properties:
+  appInsightsConfiguration: null
+  appLogsConfiguration:
+    destination: log-analytics
+    logAnalyticsConfiguration:
+      customerId: 447822d5-3282-47b7-bd07-ee64088fedcc
+      dynamicJsonColumns: false
+      sharedKey: null
+  availabilityZones: null
+  customDomainConfiguration:
+    certificateKeyVaultProperties: null
+    certificatePassword: null
+    certificateValue: null
+    customDomainVerificationId: 8DAFF89143F68B74530412346252E9849DEC946C35661D8BEE9450FF6AACC62F
+    dnsSuffix: null
+    expirationDate: null
+    subjectName: null
+    thumbprint: null
+  daprAIConnectionString: null
+  daprAIInstrumentationKey: null
+  daprConfiguration:
+    version: 1.16.4-msft.13
+  defaultDomain: whitesand-6e33b8c1.swedencentral.azurecontainerapps.io
+  diskEncryptionConfiguration: null
+  environmentMode: WorkloadProfiles
+  eventStreamEndpoint: https://swedencentral.azurecontainerapps.dev/subscriptions/c226c9ff-22c8-43d1-986b-b0ccdc8924e7/resourceGroups/screening-rg/managedEnvironments/screening-env-swe/eventstream
+  infrastructureResourceGroup: null
+  ingressConfiguration: null
+  kedaConfiguration:
+    version: 2.20.2
+  openTelemetryConfiguration: null
+  peerAuthentication:
+    mtls:
+      enabled: false
+  peerTrafficConfiguration:
+    encryption:
+      enabled: false
+  provisioningState: Succeeded
+  publicNetworkAccess: Enabled
+  staticIp: 4.166.228.49
+  vnetConfiguration: null
+  workloadProfiles:
+  - enableFips: false
+    name: Consumption
+    workloadProfileType: Consumption
+  - enableFips: false
+    name: gpu-a100
+    workloadProfileType: Consumption-GPU-NC24-A100
+  zoneRedundant: false
+resourceGroup: screening-rg
+systemData:
+  createdAt: '2026-08-09T09:20:53.3076265'
+  createdBy: inesaranabach@gmail.com
+  createdByType: User
+  lastModifiedAt: '2026-08-09T09:20:53.3076265'
+  lastModifiedBy: inesaranabach@gmail.com
+  lastModifiedByType: User
+type: Microsoft.App/managedEnvironments

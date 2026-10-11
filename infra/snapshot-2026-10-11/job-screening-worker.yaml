@@ -1,0 +1,38 @@
+# Exported 2026-10-11, after the subscription was disabled. The job had already lost its
+# container, so `template` and most of `configuration` are null: this file records the
+# resource's name, environment and workload profile only. Its settings come from the
+# templates in this repository -- see ../REBUILD.md.
+# `triggerType: Schedule` below is the empty export's default, not the trigger that ran:
+# the worker was Event-triggered by the queue (../worker-job.yaml).
+id: /subscriptions/c226c9ff-22c8-43d1-986b-b0ccdc8924e7/resourceGroups/screening-rg/providers/Microsoft.App/jobs/screening-worker
+location: Sweden Central
+name: screening-worker
+properties:
+  configuration:
+    dapr: null
+    eventTriggerConfig: null
+    identitySettings: []
+    manualTriggerConfig: null
+    registries: null
+    replicaRetryLimit: 0
+    replicaTimeout: 0
+    scheduleTriggerConfig: null
+    secrets: null
+    triggerType: Schedule
+  environmentId: /subscriptions/c226c9ff-22c8-43d1-986b-b0ccdc8924e7/resourceGroups/screening-rg/providers/Microsoft.App/managedEnvironments/screening-env-swe
+  outboundIpAddresses: []  # 161 addresses removed: the environment's shared egress pool, assigned by Azure, not rebuilt
+  provisioningState: Failed
+  template:
+    containers: null
+    initContainers: null
+    volumes: null
+  workloadProfileName: null
+resourceGroup: screening-rg
+systemData:
+  createdAt: '2026-08-11T11:23:34.9055482'
+  createdBy: inesaranabach@gmail.com
+  createdByType: User
+  lastModifiedAt: '2026-08-11T19:44:37.6097016'
+  lastModifiedBy: inesaranabach@gmail.com
+  lastModifiedByType: User
+type: Microsoft.App/jobs
